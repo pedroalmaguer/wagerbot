@@ -1,5 +1,6 @@
 import nextcord
 from nextcord.ext import commands
+from nextcord import SlashOptionChoice
 from nextcord.ui import Button, View, Modal, TextInput, Select
 import os
 
@@ -8,7 +9,7 @@ intents.message_content = True
 intents.members = True
 intents.reactions = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(intents=intents)
 
 EMOJI_MAP = [
     "🇦", "🇧", "🇨", "🇩", "🇪", "🇫", "🇬", "🇭",
@@ -182,11 +183,12 @@ class WagerButton(Button):
     async def callback(self, interaction: nextcord.Interaction):
         await interaction.response.send_modal(WagerModal(self.option, self.message_id))
 
-@bot.command()
+@bot.slash_command(name="createbet", description="Create a new bet")
 @commands.has_permissions(manage_guild=True)
-async def createbet(ctx, question: str, *options):
+async def createbet(interaction: nextcord.Interaction, question: str, option1: str, option2: str, option3: str = None, option4: str = None, option5: str = None, option6: str = None):
     if not session_active:
-        await ctx.send("No active session. Start a session with !startsession before creating bets.")
+        await interaction.response.send_message("No active session. Start a session with /startsession before creating bets.", ephemeral=True)
+        return"No active session. Start a session with !startsession before creating bets.")
         return
 
     if len(options) < 2:
@@ -233,9 +235,9 @@ lifetime_stats = {}
 last_session_stats = {}
 session_active = False
 
-@bot.command()
+@bot.slash_command(name="startsession", description="Start a new betting session")
 @commands.has_permissions(manage_guild=True)
-async def startsession(ctx):
+async def startsession(interaction: nextcord.Interaction):
     global stats, balances, session_active, last_session_stats
 
     if session_active:
@@ -249,9 +251,9 @@ async def startsession(ctx):
 
     await ctx.send("🟢 A new betting session has started! Balances and stats reset.")
 
-@bot.command()
+@bot.slash_command(name="endsession", description="End the current betting session")
 @commands.has_permissions(manage_guild=True)
-async def endsession(ctx):
+async def endsession(interaction: nextcord.Interaction):
     global session_active
     if not session_active:
         await ctx.send("No session is currently active.")
@@ -291,9 +293,9 @@ async def endsession(ctx):
 
     await ctx.send(embed=embed)
 
-@bot.command()
-async def stats(ctx):
-    user_id = ctx.author.id
+@bot.slash_command(name="stats", description="View your current session stats")
+async def stats(interaction: nextcord.Interaction):
+    user_id = interaction.user.id
     user_stats = stats.get(user_id, {
         "bets_placed": 0,
         "total_wagered": 0,
@@ -329,8 +331,8 @@ async def stats(ctx):
 
     await ctx.send(embed=embed)
 
-@bot.command()
-async def laststats(ctx):
+@bot.slash_command(name="laststats", description="View your last session stats")
+async def laststats(interaction: nextcord.Interaction):
     user_id = ctx.author.id
     user_stats = last_session_stats.get(user_id, {
         "bets_placed": 0,
@@ -349,8 +351,8 @@ async def laststats(ctx):
     embed.add_field(name="Total Lost", value=user_stats["total_lost"])
     await ctx.send(embed=embed)
 
-@bot.command()
-async def balance(ctx):
+@bot.slash_command(name="balance", description="Check your balance")
+async def balance(interaction: nextcord.Interaction):
     user_id = ctx.author.id
     balance = balances.get(user_id, 1000)
     currently_bet = sum(
@@ -365,8 +367,51 @@ async def balance(ctx):
     embed.add_field(name="Currently Wagered", value=currently_bet)
     await ctx.send(embed=embed)
 
-@bot.command()
-async def lifetimestats(ctx):
+@bot.slash_command(name="rankings", description="View current session rankings")
+async def rankings(interaction: nextcord.Interaction):
+    if not session_active:
+        await ctx.send("⚠️ Rankings are only available during an active session.")
+        return
+    if not lifetime_stats:
+        await ctx.send("No ranking data available yet.")
+        return
+
+    sorted_users = sorted(stats.items(), key=lambda x: x[1].get("total_won", 0), reverse=True)
+    embed = nextcord.Embed(title="🏆 Session Rankings", color=nextcord.Color.gold())
+
+    for rank, (uid, data) in enumerate(sorted_users[:10], start=1):
+        member = ctx.guild.get_member(uid)
+        name = member.display_name if member else f"User {uid}"
+        embed.add_field(
+            name=f"#{rank} - {name}",
+            value=f"Won: {data['total_won']} | Lost: {data['total_lost']} | Bets: {data['bets_placed']}",
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+@bot.slash_command(name="lifetimerankings", description="View all-time rankings")
+async def lifetimerankings(interaction: nextcord.Interaction):
+    if not lifetime_stats:
+        await ctx.send("No lifetime ranking data available yet.")
+        return
+
+    sorted_users = sorted(lifetime_stats.items(), key=lambda x: x[1].get("total_won", 0), reverse=True)
+    embed = nextcord.Embed(title="🌐 Lifetime Rankings", color=nextcord.Color.green())
+
+    for rank, (uid, data) in enumerate(sorted_users[:10], start=1):
+        member = ctx.guild.get_member(uid)
+        name = member.display_name if member else f"User {uid}"
+        embed.add_field(
+            name=f"#{rank} - {name}",
+            value=f"Won: {data['total_won']} | Lost: {data['total_lost']} | Bets: {data['bets_placed']}",
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
+@bot.slash_command(name="lifetimestats", description="View your lifetime stats")
+async def lifetimestats(interaction: nextcord.Interaction):
     user_id = ctx.author.id
     user_stats = lifetime_stats.get(user_id, {
         "bets_placed": 0,
@@ -421,6 +466,15 @@ async def update_user_stats(message_id, winning_option):
 # Load token from .env file
 from dotenv import load_dotenv
 load_dotenv()
+
+@createbet.autocomplete("question")
+async def autocomplete_bet_question(interaction: nextcord.Interaction, value: str):
+    options = []
+    for msg_id, bet in bets.items():
+        if not bet.get("locked") and value.lower() in bet["question"].lower():
+            label = f"{bet['question'][:90]}..." if len(bet['question']) > 90 else bet['question']
+            options.append(SlashOptionChoice(name=label, value=str(msg_id)))
+    return options[:25]
 
 # Run the bot using your token stored in the DISCORD_BOT_TOKEN environment variable
 bot.run(os.getenv("DISCORD_BOT_TOKEN"))
