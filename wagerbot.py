@@ -147,6 +147,7 @@ Total Pot: **{total_pot}**
         message = await channel.fetch_message(self.message_id)
         await message.edit(embed=embed, view=None)
         del bets[self.message_id]
+save_data()
 
         # Send updated balance messages to all participants
         for uid in bet["wagers"]:
@@ -233,7 +234,34 @@ balances = {}
 stats = {}
 lifetime_stats = {}
 last_session_stats = {}
+
+# Persistence
+import json
+
+def save_data():
+    with open("data.json", "w") as f:
+        json.dump({
+            "balances": balances,
+            "stats": stats,
+            "lifetime_stats": lifetime_stats,
+            "last_session_stats": last_session_stats
+        }, f)
+
+def load_data():
+    global balances, stats, lifetime_stats, last_session_stats
+    try:
+        with open("data.json", "r") as f:
+            data = json.load(f)
+            balances = {int(k): v for k, v in data.get("balances", {}).items()}
+            stats = {int(k): v for k, v in data.get("stats", {}).items()}
+            lifetime_stats = {int(k): v for k, v in data.get("lifetime_stats", {}).items()}
+            last_session_stats = {int(k): v for k, v in data.get("last_session_stats", {}).items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+load_data()
 session_active = False
+    save_data()
 
 @bot.slash_command(name="startsession", description="Start a new betting session")
 @commands.has_permissions(manage_guild=True)
@@ -248,6 +276,7 @@ async def startsession(interaction: nextcord.Interaction):
     stats = {}
     balances = {}
     session_active = True
+    save_data()
 
     await ctx.send("🟢 A new betting session has started! Balances and stats reset.")
 
@@ -456,10 +485,11 @@ async def update_user_stats(message_id, winning_option):
 
             # 🪙 Apply winnings to balance
             balances[user_id] = balances.get(user_id, 1000) + win_amount
+    save_data()
 
             session["total_won"] += win_amount
             lifetime["total_won"] += win_amount
-        else:
+        else: 
             session["total_lost"] += wager["amount"]
             lifetime["total_lost"] += wager["amount"]
 

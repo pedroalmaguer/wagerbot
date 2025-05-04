@@ -1,64 +1,76 @@
 # 🎲✨ Discord Betting Bot 🎰🔥
 
-Welcome to the **Ultimate Discord Betting Bot** 🧠💸 built with 🐍 Python + ⚡ Nextcord!  
-Let your server wager fake money 💵 on real questions 🤔 and settle bets like absolute degenerates 👑.
+A session-based Discord betting bot built with 🐍 Python + ⚡ Nextcord, using **slash commands** and interactive UI. Users wager fake money on custom bets and track their stats across sessions!
 
 ---
 
-## 🚀 Features 🚀
+## 💡 Features
 
-- 🎤 **Custom Bets** — Admins can ask _anything_ and set the options 🧠💥  
-- 💰 **Fake Currency** — No real money, only fake server glory 💎  
-- 🧾 **Session-Based Tracking** — Reset stats with each new era ⚔️  
-- 📈 **Stats Galore** — Track your **bets**, **wins**, **losses**, and **ego** 📊  
-- 🎮 **Emoji-powered Wagering** — Vote with 🇦 🇧 🇨 like a royal court jester 🤹  
-- 🔒 **Lock Bets** — Close the gate when the hype is real 🚪🔥  
-- ❌ **Cancel Bets** — Abort mission like a responsible adult 🧯  
-- 🏁 **Resolve Bets** — Choose the winner and crown the champions 👑  
-- 🤫 **Ephemeral Balance Updates** — Only _you_ see your shame or glory 🧍💬
-
----
-
-## 🧠 Requirements
-
-- Python 3.8+
-- `nextcord`
-- `python-dotenv`
-
-```bash
-pip install nextcord python-dotenv
-```
+- ✅ Fully slash-command powered (`/createbet`, `/startsession`, `/balance`, etc.)
+- 🎯 Emoji-based betting with buttons (A–Z)
+- 🔒 Lock, ❌ Cancel, and 🏁 Resolve bets using UI buttons
+- 📊 Real-time stats tracking (session, last session, lifetime)
+- 💰 Balance display and updates after bet resolution
+- 🏆 Rankings (session and lifetime)
+- 🤫 Ephemeral balance updates after each bet resolves
+- 🔍 Autocomplete support for selecting open bets
 
 ---
 
-## 📦 Setup
+## 🚀 Slash Commands
 
-1. Clone the repo 🧬  
-2. Create a `.env` file and add your bot token:
-
-```
-DISCORD_BOT_TOKEN=your_token_here
-```
-
-3. Run the bot:
-
-```bash
-python bot.py
-```
+| Command               | Description                                  |
+|-----------------------|----------------------------------------------|
+| `/startsession`       | Start a new betting session                 |
+| `/endsession`         | End the current session and display summary |
+| `/createbet`          | Admin-only: Create a new bet with options   |
+| `/balance`            | Show your balance and amount wagered        |
+| `/stats`              | View your current session stats             |
+| `/laststats`          | View your stats from the last session       |
+| `/lifetimestats`      | View your all-time stats                    |
+| `/rankings`           | Leaderboard for the current session         |
+| `/lifetimerankings`   | All-time leaderboard                        |
 
 ---
 
-## 🧪 Commands
+## ⚙️ Setup
 
-| Command           | Description                            |
-|------------------|----------------------------------------|
-| `!startsession`   | Start a new betting session ♻️         |
-| `!endsession`     | Ends the current session 🔚            |
-| `!createbet`      | Create a bet with multiple options 🗳️ |
-| `!stats`          | View your current session stats 📊     |
-| `!laststats`      | Stats from the last session ⏮️         |
-| `!lifetimestats`  | Lifetime stats 📈                      |
-| `!balance`        | Check your balance 💰                  |
+1. Clone the repo:
+   ```bash
+   git clone https://github.com/your-username/wagerbot.git
+   cd wagerbot
+   ```
+
+2. Create a `.env` file:
+   ```env
+   DISCORD_BOT_TOKEN=your-token-here
+   ```
+
+3. Install dependencies:
+   ```bash
+   pip install nextcord python-dotenv
+   ```
+
+4. Run the bot:
+   ```bash
+   python bot.py
+   ```
+
+---
+
+## 🧠 Notes
+
+- No real currency is used or stored — this is all for fun
+- Stats and balances are in-memory (resets when bot restarts)
+- Make sure the bot has message, embed, and interaction permissions
+
+---
+
+## 📅 Coming Soon
+
+- Persistent stat and balance storage
+- Bet history logs
+- Bet expiry timers
 
 ---
 
