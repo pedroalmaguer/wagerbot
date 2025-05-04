@@ -60,8 +60,6 @@ A session-based Discord betting bot built with 🐍 Python + ⚡ Nextcord, using
 
 ## 🧠 Notes
 
-- No real currency is used or stored — this is all for fun
-- Stats and balances are in-memory (resets when bot restarts)
 - Make sure the bot has message, embed, and interaction permissions
 
 ---
