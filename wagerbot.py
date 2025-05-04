@@ -3,6 +3,7 @@ from nextcord.ext import commands
 from nextcord import SlashOptionChoice
 from nextcord.ui import Button, View, Modal, TextInput, Select
 import os
+from datetime import datetime
 
 intents = nextcord.Intents.default()
 intents.message_content = True
@@ -53,6 +54,7 @@ class WagerModal(Modal):
             "amount": amount,
             "name": interaction.user.display_name
         }
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] f"[💸] {interaction.user.display_name} wagered {amount} on '{self.option_label}'"")
         balances[user_id] = user_balance - amount
 
         # Update message with current pot, participant count, and option breakdown
@@ -85,6 +87,7 @@ class LockBetButton(Button):
         bet = bets.get(self.message_id)
         if bet:
             bet["locked"] = True
+            print(f"[🔒] Bet '{bet['question']}' has been locked.")
             await interaction.response.send_message("✅ Bet has been locked. No more wagers allowed.", ephemeral=True)
 
 class ResolveBetButton(Button):
@@ -118,6 +121,7 @@ class WinnerSelect(Select):
     async def callback(self, interaction: nextcord.Interaction):
         winning_option = self.values[0]
         await interaction.response.send_message(f"You selected: {winning_option}", ephemeral=True)
+        print(f"[🏁] Bet resolved. Winning option: {winning_option}")
         await update_user_stats(self.message_id, winning_option)
 
         bet = bets.get(self.message_id)
@@ -216,6 +220,7 @@ async def createbet(interaction: nextcord.Interaction, question: str, option1: s
         "wagers": {},
         "locked": False
     }
+    print(f"[📢] New bet created: '{question}' with options {options}")
 
     view = View(timeout=None)
     for i, option in enumerate(options):
@@ -239,6 +244,8 @@ last_session_stats = {}
 import json
 
 def save_data():
+    if not os.path.exists("data.json"):
+        print("[📁] Creating new data.json file for persistent storage.")
     with open("data.json", "w") as f:
         json.dump({
             "balances": balances,
@@ -262,6 +269,7 @@ def load_data():
 load_data()
 session_active = False
     save_data()
+    print("[🛑] Session ended.")
 
 @bot.slash_command(name="startsession", description="Start a new betting session")
 @commands.has_permissions(manage_guild=True)
@@ -277,6 +285,7 @@ async def startsession(interaction: nextcord.Interaction):
     balances = {}
     session_active = True
     save_data()
+    print("[🎲] New session started. Balances and stats reset.")
 
     await ctx.send("🟢 A new betting session has started! Balances and stats reset.")
 
@@ -485,6 +494,7 @@ async def update_user_stats(message_id, winning_option):
 
             # 🪙 Apply winnings to balance
             balances[user_id] = balances.get(user_id, 1000) + win_amount
+            print(f"[💰] Updated balance for {user_id}: {balances[user_id]}")
     save_data()
 
             session["total_won"] += win_amount
