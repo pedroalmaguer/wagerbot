@@ -191,6 +191,7 @@ class WagerButton(Button):
 @bot.slash_command(name="createbet", description="Create a new bet")
 @commands.has_permissions(manage_guild=True)
 async def createbet(interaction: nextcord.Interaction, question: str, option1: str, option2: str, option3: str = None, option4: str = None, option5: str = None, option6: str = None):
+    options = [opt for opt in [option1, option2, option3, option4, option5, option6] if opt]
     if not session_active:
         await interaction.response.send_message("No active session. Start a session with /startsession before creating bets.", ephemeral=True)
         return"No active session. Start a session with !startsession before creating bets."
@@ -213,7 +214,8 @@ async def createbet(interaction: nextcord.Interaction, question: str, option1: s
         color=nextcord.Color.blurple()
     )
 
-    msg = await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed)
+    msg = await interaction.original_message()
     bets[msg.id] = {
         "question": question,
         "options": options,
@@ -354,7 +356,7 @@ async def stats_command(interaction: nextcord.Interaction):
     avg_lost = total_lost / bets_placed if bets_placed > 0 else 0
 
     embed = nextcord.Embed(
-        title=f"📊 Stats for {ctx.author.display_name}",
+        title=f"📊 Stats for {interaction.user.display_name}",
         color=nextcord.Color.blue()
     )
     embed.add_field(name="Bets Placed", value=bets_placed)
@@ -367,7 +369,7 @@ async def stats_command(interaction: nextcord.Interaction):
     embed.add_field(name="Avg Won", value=f"{avg_won:.1f}")
     embed.add_field(name="Avg Lost", value=f"{avg_lost:.1f}")
 
-    await interaction.response.send_message(embed=embed)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.slash_command(name="laststats", description="View your last session stats")
 async def laststats(interaction: nextcord.Interaction):
@@ -380,7 +382,7 @@ async def laststats(interaction: nextcord.Interaction):
     })
 
     embed = nextcord.Embed(
-        title=f"🕓 Last Session Stats for {ctx.author.display_name}",
+        title=f"🕓 Last Session Stats for {interaction.user.display_name}",
         color=nextcord.Color.orange()
     )
     embed.add_field(name="Bets Placed", value=user_stats["bets_placed"])
@@ -398,7 +400,7 @@ async def balance(interaction: nextcord.Interaction):
         for bet in bets.values() if not bet.get("locked")
     )
     embed = nextcord.Embed(
-        title=f"💰 Balance for {ctx.author.display_name}",
+        title=f"💰 Balance for {interaction.user.display_name}",
         color=nextcord.Color.gold()
     )
     embed.add_field(name="Current Balance", value=balance)
@@ -459,7 +461,7 @@ async def lifetimestats(interaction: nextcord.Interaction):
     })
 
     embed = nextcord.Embed(
-        title=f"🌐 Lifetime Stats for {ctx.author.display_name}",
+        title=f"🌐 Lifetime Stats for {interaction.user.display_name}",
         color=nextcord.Color.teal()
     )
     embed.add_field(name="Bets Placed", value=user_stats["bets_placed"])
@@ -504,11 +506,6 @@ async def update_user_stats(message_id, winning_option):
 
         save_data()
 
-        session["total_won"] += win_amount
-        lifetime["total_won"] += win_amount
-    else: 
-            session["total_lost"] += wager["amount"]
-            lifetime["total_lost"] += wager["amount"]
 
 # Load token from .env file
 from dotenv import load_dotenv
