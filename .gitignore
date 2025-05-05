@@ -22,6 +22,7 @@ Thumbs.db
 # Logs or temporary files
 *.log
 *.tmp
+data.json
 
 # Virtual environment folders
 venv/
