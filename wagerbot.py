@@ -20,15 +20,15 @@ EMOJI_MAP = [
 ]
 
 class WagerModal(Modal):
-    def __init__(self, option_label, message_id):
+    def __init__(self, option_label, message_id, use_persistent_balance=False):
         super().__init__(title=f"Your Wager On \"{option_label}\"")
         self.option_label = option_label
         self.message_id = message_id
+        self.use_persistent_balance = use_persistent_balance
         self.amount = TextInput(label="Wager Amount", required=True)
         self.add_item(self.amount)
 
     async def callback(self, interaction: nextcord.Interaction):
-        
         try:
             amount = int(self.amount.value)
             if amount <= 0:
@@ -38,11 +38,10 @@ class WagerModal(Modal):
             return
 
         user_id = interaction.user.id
-        if session_active:
-            user_balance = balances.get(user_id, 1000)
-        else:
-             user_balance = persistent_balances.get(user_id, 1000)
 
+        # Pick the right balance source
+        balance_dict = persistent_balances if self.use_persistent_balance else balances
+        user_balance = balance_dict.get(user_id, 1000)
 
         if amount > user_balance:
             await interaction.response.send_message("Insufficient funds.", ephemeral=True)
@@ -58,12 +57,9 @@ class WagerModal(Modal):
             "amount": amount,
             "name": interaction.user.display_name
         }
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💸] {interaction.user.display_name} wagered {amount} on '{self.option_label}'")
-        if session_active:
-            balances[user_id] = user_balance - amount
-        else:
-            persistent_balances[user_id] = user_balance - amount
 
+        # Deduct balance
+        balance_dict[user_id] = user_balance - amount
 
         # Update message with current pot, participant count, and option breakdown
         channel = interaction.channel
@@ -83,8 +79,10 @@ class WagerModal(Modal):
         await message.edit(embed=embed)
 
         await interaction.response.send_message(
-            f"Wagered {amount} on {self.option_label}. Remaining: {balances[user_id]}", ephemeral=True
+            f"Wagered {amount} on {self.option_label}. Remaining: {balance_dict[user_id]}",
+            ephemeral=True
         )
+
 
 class LockBetButton(Button):
     def __init__(self, message_id):
@@ -493,9 +491,78 @@ async def lifetimestats(interaction: nextcord.Interaction):
     embed.add_field(name="Total Lost", value=user_stats["total_lost"])
     await interaction.response.send_message(embed=embed)
 
+@bot.slash_command(name="createfunbet", description="Create a standalone fun bet using persistent balance")
+@commands.has_permissions(manage_guild=True)
+async def createfunbet(
+    interaction: nextcord.Interaction,
+    question: str,
+    option1: str,
+    option2: str,
+    option3: str = None,
+    option4: str = None,
+    option5: str = None,
+    option6: str = None
+):
+    if session_active:
+        await interaction.response.send_message("Fun bets can only be created outside of a session.", ephemeral=True)
+        return
+
+    options = [opt for opt in [option1, option2, option3, option4, option5, option6] if opt]
+    if len(options) < 2:
+        await interaction.response.send_message("You must provide at least 2 options.", ephemeral=True)
+        return
+    if len(options) > len(EMOJI_MAP):
+        await interaction.response.send_message(f"You can provide at most {len(EMOJI_MAP)} options.", ephemeral=True)
+        return
+
+    description = f"> **{question}**\n"
+    for i, opt in enumerate(options):
+        description += f"{EMOJI_MAP[i]} {opt}\n"
+
+    embed = nextcord.Embed(
+        title="🎲 New Fun Bet!",
+        description=description,
+        color=nextcord.Color.magenta()
+    )
+
+    await interaction.response.defer()
+    msg = await interaction.followup.send(embed=embed, wait=True)
+
+    bets[msg.id] = {
+        "question": question,
+        "options": options,
+        "wagers": {},
+        "locked": False,
+        "fun": True  # flag it as a fun bet
+    }
+
+    view = View(timeout=None)
+    for i, option in enumerate(options):
+        emoji = EMOJI_MAP[i]
+        view.add_item(WagerButton(label=f"{emoji} {option}", option=option, message_id=msg.id))
+
+    view.add_item(LockBetButton(msg.id))
+    view.add_item(CancelBetButton(msg.id))
+    view.add_item(ResolveBetButton(msg.id))
+    await msg.edit(view=view)
+
 # Update stats after bet is resolved
 async def update_user_stats(message_id, winning_option):
     bet = bets.get(message_id)
+    if bet.get("fun"):
+    # Only adjust persistent balance, not session/lifetime stats
+
+        for user_id, wager in bet["wagers"].items():
+            if wager["option"] == winning_option:
+                total_pot = sum(w["amount"] for w in bet["wagers"].values())
+                total_winning = sum(w["amount"] for w in bet["wagers"].values() if w["option"] == winning_option)
+                share = wager["amount"] / total_winning
+                win_amount = int(share * total_pot)
+                persistent_balances[user_id] = persistent_balances.get(user_id, 1000) + win_amount
+            # else: loss is already deducted when bet is placed
+        save_data()
+        return
+
     if not bet:
         return
 
@@ -533,6 +600,15 @@ async def update_user_stats(message_id, winning_option):
 # Load token from .env file
 from dotenv import load_dotenv
 load_dotenv()
+
+# Force sync all slash commands on startup
+@bot.event
+async def on_ready():
+    await bot.sync_application_commands()
+    cmds = await bot.get_application_commands()
+    
+    print(f"[🤖] Logged in as {bot.user}")
+    print(f"Loaded commands: {[cmd.name for cmd in cmds]}")
 
 # Autocomplete not supported in this version of nextcord. This block has been removed.
 
