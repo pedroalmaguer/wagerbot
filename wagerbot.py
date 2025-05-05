@@ -258,30 +258,46 @@ print("[🤌] Bot start. Bring on the degenerecy.")
 import json
 
 def save_data():
-    if not os.path.exists("data.json"):
-        print("[📁] Creating new data.json file for persistent storage.")
-    with open("data.json", "w") as f:
-        json.dump({
-            "balances": balances,
-            "stats": stats,
-            "lifetime_stats": lifetime_stats,
-            "last_session_stats": last_session_stats,
-            "persistent_balances": persistent_balances
-        }, f)
+    try:
+        with open("data.json", "w") as f:
+            json.dump({
+                "balances": balances,
+                "stats": stats,
+                "lifetime_stats": lifetime_stats,
+                "last_session_stats": last_session_stats,
+                "persistent_balances": persistent_balances
+            }, f)
+        print(f"[💾] Saved data.json with {len(persistent_balances)} persistent balances.")
+    except Exception as e:
+        print(f"[❌] Error saving data.json: {e}")
 
 def load_data():
-    global balances, persistent_balances, stats, lifetime_stats, last_session_stats
+    global balances, stats, lifetime_stats, last_session_stats, persistent_balances
+
     try:
         with open("data.json", "r") as f:
             data = json.load(f)
             balances = {int(k): v for k, v in data.get("balances", {}).items()}
-            persistent_balances = {int(k): v for k, v in data.get("persistent_balances", {}).items()}  # THIS LINE
             stats = {int(k): v for k, v in data.get("stats", {}).items()}
             lifetime_stats = {int(k): v for k, v in data.get("lifetime_stats", {}).items()}
             last_session_stats = {int(k): v for k, v in data.get("last_session_stats", {}).items()}
-        print("[✅] Loaded data.json successfully.")
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"[⚠️] Could not load data.json: {e}")
+            persistent_balances = {int(k): v for k, v in data.get("persistent_balances", {}).items()}
+            print(f"[📁] Loaded data.json: {len(persistent_balances)} persistent balances, {len(stats)} stats records.")
+    except FileNotFoundError:
+        print("[📁] data.json not found — starting with fresh data.")
+        balances = {}
+        stats = {}
+        lifetime_stats = {}
+        last_session_stats = {}
+        persistent_balances = {}
+    except json.JSONDecodeError as e:
+        print(f"[⚠️] data.json corrupted or invalid JSON: {e}")
+        balances = {}
+        stats = {}
+        lifetime_stats = {}
+        last_session_stats = {}
+        persistent_balances = {}
+
 
 
 load_data()
@@ -412,21 +428,31 @@ async def laststats(interaction: nextcord.Interaction):
     embed.add_field(name="Total Lost", value=user_stats["total_lost"])
     await interaction.response.send_message(embed=embed)
 
-@bot.slash_command(name="balance", description="Check your balance")
+@bot.slash_command(name="balance", description="Check your balances")
 async def balance(interaction: nextcord.Interaction):
     user_id = interaction.user.id
-    balance = persistent_balances.get(user_id, 1000)  # persistent for non-session bets
-    currently_bet = sum(
+    session_balance = balances.get(user_id, 1000)
+    persistent_balance = persistent_balances.get(user_id, 1000)
+
+    currently_bet_session = sum(
         bet["wagers"].get(user_id, {}).get("amount", 0)
-        for bet in bets.values() if not bet.get("locked")
+        for bet in bets.values() if not bet.get("locked") and not bet.get("fun")
     )
+    currently_bet_persistent = sum(
+        bet["wagers"].get(user_id, {}).get("amount", 0)
+        for bet in bets.values() if not bet.get("locked") and bet.get("fun")
+    )
+
     embed = nextcord.Embed(
         title=f"💰 Balance for {interaction.user.display_name}",
         color=nextcord.Color.gold()
     )
-    embed.add_field(name="Persistent Balance", value=balance)
-    embed.add_field(name="Currently Wagered", value=currently_bet)
-    await interaction.response.send_message(embed=embed)
+    embed.add_field(name="Session Balance", value=session_balance)
+    embed.add_field(name="Currently Wagered (Session)", value=currently_bet_session)
+    embed.add_field(name="Persistent Balance", value=persistent_balance)
+    embed.add_field(name="Currently Wagered (Persistent)", value=currently_bet_persistent)
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.slash_command(name="rankings", description="View current session rankings")
 async def rankings(interaction: nextcord.Interaction):
@@ -546,26 +572,39 @@ async def createfunbet(
     view.add_item(ResolveBetButton(msg.id))
     await msg.edit(view=view)
 
-# Update stats after bet is resolved
 async def update_user_stats(message_id, winning_option):
     bet = bets.get(message_id)
-    if bet.get("fun"):
-    # Only adjust persistent balance, not session/lifetime stats
-
-        for user_id, wager in bet["wagers"].items():
-            if wager["option"] == winning_option:
-                total_pot = sum(w["amount"] for w in bet["wagers"].values())
-                total_winning = sum(w["amount"] for w in bet["wagers"].values() if w["option"] == winning_option)
-                share = wager["amount"] / total_winning
-                win_amount = int(share * total_pot)
-                persistent_balances[user_id] = persistent_balances.get(user_id, 1000) + win_amount
-            # else: loss is already deducted when bet is placed
-        save_data()
-        return
-
     if not bet:
         return
 
+    # Handle fun bets (outside session)
+    if bet.get("fun"):
+        for user_id, wager in bet["wagers"].items():
+            total_pot = sum(w["amount"] for w in bet["wagers"].values())
+            total_winning = sum(w["amount"] for w in bet["wagers"].values() if w["option"] == winning_option)
+            share = wager["amount"] / total_winning
+            win_amount = int(share * total_pot) if wager["option"] == winning_option else 0
+
+            # Update persistent balance
+            if wager["option"] == winning_option:
+                persistent_balances[user_id] = persistent_balances.get(user_id, 1000) + win_amount
+            message = (
+                f"You won {win_amount} credits. " if win_amount > 0
+                else f"You lost {wager['amount']} credits. "
+            ) + f"New persistent balance: {persistent_balances.get(user_id, 1000)}"
+
+            member = interaction.guild.get_member(user_id)
+            if member:
+                try:
+                    await interaction.followup.send(content=message, ephemeral=True)
+                except nextcord.HTTPException:
+                    pass
+
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💰 FUN] Persistent balances updated.")
+        save_data()
+        return
+
+    # Handle session-based bets
     for user_id, wager in bet["wagers"].items():
         session = stats.setdefault(user_id, {
             "bets_placed": 0, "total_wagered": 0, "total_won": 0, "total_lost": 0
@@ -584,18 +623,32 @@ async def update_user_stats(message_id, winning_option):
             share = wager["amount"] / total_winning
             win_amount = int(share * total_pot)
 
-            # 🪙 Apply winnings to balance
             balances[user_id] = balances.get(user_id, 1000) + win_amount
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💰] Updated balance for {user_id}: {balances[user_id]}")
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💰] Updated session balance for {user_id}: {balances[user_id]}")
 
             session["total_won"] += win_amount
             lifetime["total_won"] += win_amount
+
+            member = interaction.guild.get_member(user_id)
+            if member:
+                try:
+                    message = f"You won {win_amount} credits. New session balance: {balances[user_id]}"
+                    await interaction.followup.send(content=message, ephemeral=True)
+                except nextcord.HTTPException:
+                    pass
         else:
             session["total_lost"] += wager["amount"]
             lifetime["total_lost"] += wager["amount"]
 
-        save_data()
+            member = interaction.guild.get_member(user_id)
+            if member:
+                try:
+                    message = f"You lost {wager['amount']} credits. New session balance: {balances.get(user_id, 1000)}"
+                    await interaction.followup.send(content=message, ephemeral=True)
+                except nextcord.HTTPException:
+                    pass
 
+    save_data()
 
 # Load token from .env file
 from dotenv import load_dotenv
