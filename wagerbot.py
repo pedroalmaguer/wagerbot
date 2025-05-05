@@ -1,6 +1,6 @@
 import nextcord
 from nextcord.ext import commands
-from nextcord import SlashOptionChoice
+from nextcord import SlashOption
 from nextcord.ui import Button, View, Modal, TextInput, Select
 import os
 from datetime import datetime
@@ -54,7 +54,7 @@ class WagerModal(Modal):
             "amount": amount,
             "name": interaction.user.display_name
         }
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] f"[💸] {interaction.user.display_name} wagered {amount} on '{self.option_label}'"")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💸] {interaction.user.display_name} wagered {amount} on '{self.option_label}'")
         balances[user_id] = user_balance - amount
 
         # Update message with current pot, participant count, and option breakdown
@@ -151,7 +151,7 @@ Total Pot: **{total_pot}**
         message = await channel.fetch_message(self.message_id)
         await message.edit(embed=embed, view=None)
         del bets[self.message_id]
-save_data()
+        save_data()
 
         # Send updated balance messages to all participants
         for uid in bet["wagers"]:
@@ -193,14 +193,14 @@ class WagerButton(Button):
 async def createbet(interaction: nextcord.Interaction, question: str, option1: str, option2: str, option3: str = None, option4: str = None, option5: str = None, option6: str = None):
     if not session_active:
         await interaction.response.send_message("No active session. Start a session with /startsession before creating bets.", ephemeral=True)
-        return"No active session. Start a session with !startsession before creating bets.")
+        return"No active session. Start a session with !startsession before creating bets."
         return
 
     if len(options) < 2:
-        await ctx.send("You must provide at least 2 options.")
+        await interaction.response.send_message("You must provide at least 2 options.")
         return
     if len(options) > len(EMOJI_MAP):
-        await ctx.send(f"You can provide at most {len(EMOJI_MAP)} options.")
+        await interaction.response.send_message(f"You can provide at most {len(EMOJI_MAP)} options.")
         return
 
     description = f"> **{question}**\n"
@@ -213,7 +213,7 @@ async def createbet(interaction: nextcord.Interaction, question: str, option1: s
         color=nextcord.Color.blurple()
     )
 
-    msg = await ctx.send(embed=embed)
+    msg = await interaction.response.send_message(embed=embed)
     bets[msg.id] = {
         "question": question,
         "options": options,
@@ -268,8 +268,8 @@ def load_data():
 
 load_data()
 session_active = False
-    save_data()
-    print("[🛑] Session ended.")
+save_data()
+print("[🛑] Session ended.")
 
 @bot.slash_command(name="startsession", description="Start a new betting session")
 @commands.has_permissions(manage_guild=True)
@@ -277,7 +277,7 @@ async def startsession(interaction: nextcord.Interaction):
     global stats, balances, session_active, last_session_stats
 
     if session_active:
-        await ctx.send("A session is already active.")
+        await interaction.response.send_message("A session is already active.")
         return
 
     last_session_stats = stats.copy()
@@ -287,22 +287,22 @@ async def startsession(interaction: nextcord.Interaction):
     save_data()
     print("[🎲] New session started. Balances and stats reset.")
 
-    await ctx.send("🟢 A new betting session has started! Balances and stats reset.")
+    await interaction.response.send_message("🟢 A new betting session has started! Balances and stats reset.")
 
 @bot.slash_command(name="endsession", description="End the current betting session")
 @commands.has_permissions(manage_guild=True)
 async def endsession(interaction: nextcord.Interaction):
     global session_active
     if not session_active:
-        await ctx.send("No session is currently active.")
+        await interaction.response.send_message("No session is currently active.")
         return
 
     session_active = False
 
-    await ctx.send("🔴 Session ended.")
+    await interaction.response.send_message("🔴 Session ended.")
 
     if not stats:
-        await ctx.send("No stats to display for this session.")
+        await interaction.response.send_message("No stats to display for this session.")
         return
 
     biggest_winner = max(stats.items(), key=lambda x: x[1].get("total_won", 0))[0]
@@ -329,10 +329,10 @@ async def endsession(interaction: nextcord.Interaction):
     if best_win_rate:
         embed.add_field(name="Best Win % (2+ bets)", value=f"{get_name(best_win_rate)} ({best_win_pct:.1f}%)", inline=False)
 
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="stats", description="View your current session stats")
-async def stats(interaction: nextcord.Interaction):
+async def stats_command(interaction: nextcord.Interaction):
     user_id = interaction.user.id
     user_stats = stats.get(user_id, {
         "bets_placed": 0,
@@ -367,7 +367,7 @@ async def stats(interaction: nextcord.Interaction):
     embed.add_field(name="Avg Won", value=f"{avg_won:.1f}")
     embed.add_field(name="Avg Lost", value=f"{avg_lost:.1f}")
 
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="laststats", description="View your last session stats")
 async def laststats(interaction: nextcord.Interaction):
@@ -387,7 +387,7 @@ async def laststats(interaction: nextcord.Interaction):
     embed.add_field(name="Total Wagered", value=user_stats["total_wagered"])
     embed.add_field(name="Total Won", value=user_stats["total_won"])
     embed.add_field(name="Total Lost", value=user_stats["total_lost"])
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="balance", description="Check your balance")
 async def balance(interaction: nextcord.Interaction):
@@ -403,15 +403,15 @@ async def balance(interaction: nextcord.Interaction):
     )
     embed.add_field(name="Current Balance", value=balance)
     embed.add_field(name="Currently Wagered", value=currently_bet)
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="rankings", description="View current session rankings")
 async def rankings(interaction: nextcord.Interaction):
     if not session_active:
-        await ctx.send("⚠️ Rankings are only available during an active session.")
+        await interaction.response.send_message("⚠️ Rankings are only available during an active session.")
         return
     if not lifetime_stats:
-        await ctx.send("No ranking data available yet.")
+        await interaction.response.send_message("No ranking data available yet.")
         return
 
     sorted_users = sorted(stats.items(), key=lambda x: x[1].get("total_won", 0), reverse=True)
@@ -426,12 +426,12 @@ async def rankings(interaction: nextcord.Interaction):
             inline=False
         )
 
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="lifetimerankings", description="View all-time rankings")
 async def lifetimerankings(interaction: nextcord.Interaction):
     if not lifetime_stats:
-        await ctx.send("No lifetime ranking data available yet.")
+        await interaction.response.send_message("No lifetime ranking data available yet.")
         return
 
     sorted_users = sorted(lifetime_stats.items(), key=lambda x: x[1].get("total_won", 0), reverse=True)
@@ -446,7 +446,7 @@ async def lifetimerankings(interaction: nextcord.Interaction):
             inline=False
         )
 
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 @bot.slash_command(name="lifetimestats", description="View your lifetime stats")
 async def lifetimestats(interaction: nextcord.Interaction):
@@ -466,7 +466,7 @@ async def lifetimestats(interaction: nextcord.Interaction):
     embed.add_field(name="Total Wagered", value=user_stats["total_wagered"])
     embed.add_field(name="Total Won", value=user_stats["total_won"])
     embed.add_field(name="Total Lost", value=user_stats["total_lost"])
-    await ctx.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
 # Update stats after bet is resolved
 async def update_user_stats(message_id, winning_option):
@@ -494,12 +494,19 @@ async def update_user_stats(message_id, winning_option):
 
             # 🪙 Apply winnings to balance
             balances[user_id] = balances.get(user_id, 1000) + win_amount
-            print(f"[💰] Updated balance for {user_id}: {balances[user_id]}")
-    save_data()
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💰] Updated balance for {user_id}: {balances[user_id]}")
 
             session["total_won"] += win_amount
             lifetime["total_won"] += win_amount
-        else: 
+        else:
+            session["total_lost"] += wager["amount"]
+            lifetime["total_lost"] += wager["amount"]
+
+        save_data()
+
+        session["total_won"] += win_amount
+        lifetime["total_won"] += win_amount
+    else: 
             session["total_lost"] += wager["amount"]
             lifetime["total_lost"] += wager["amount"]
 
@@ -507,14 +514,7 @@ async def update_user_stats(message_id, winning_option):
 from dotenv import load_dotenv
 load_dotenv()
 
-@createbet.autocomplete("question")
-async def autocomplete_bet_question(interaction: nextcord.Interaction, value: str):
-    options = []
-    for msg_id, bet in bets.items():
-        if not bet.get("locked") and value.lower() in bet["question"].lower():
-            label = f"{bet['question'][:90]}..." if len(bet['question']) > 90 else bet['question']
-            options.append(SlashOptionChoice(name=label, value=str(msg_id)))
-    return options[:25]
+# Autocomplete not supported in this version of nextcord. This block has been removed.
 
 # Run the bot using your token stored in the DISCORD_BOT_TOKEN environment variable
 bot.run(os.getenv("DISCORD_BOT_TOKEN"))
