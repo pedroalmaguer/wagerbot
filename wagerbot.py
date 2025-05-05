@@ -38,7 +38,11 @@ class WagerModal(Modal):
             return
 
         user_id = interaction.user.id
-        user_balance = balances.get(user_id, 1000)
+        if session_active:
+            user_balance = balances.get(user_id, 1000)
+        else:
+             user_balance = persistent_balances.get(user_id, 1000)
+
 
         if amount > user_balance:
             await interaction.response.send_message("Insufficient funds.", ephemeral=True)
@@ -55,7 +59,11 @@ class WagerModal(Modal):
             "name": interaction.user.display_name
         }
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💸] {interaction.user.display_name} wagered {amount} on '{self.option_label}'")
-        balances[user_id] = user_balance - amount
+        if session_active:
+            balances[user_id] = user_balance - amount
+        else:
+            persistent_balances[user_id] = user_balance - amount
+
 
         # Update message with current pot, participant count, and option breakdown
         channel = interaction.channel
@@ -238,6 +246,7 @@ async def createbet(interaction: nextcord.Interaction, question: str, option1: s
 
 bets = {}
 balances = {}
+persistent_balances = {}
 stats = {}
 lifetime_stats = {}
 last_session_stats = {}
@@ -253,7 +262,8 @@ def save_data():
             "balances": balances,
             "stats": stats,
             "lifetime_stats": lifetime_stats,
-            "last_session_stats": last_session_stats
+            "last_session_stats": last_session_stats,
+            "persistent_balances": persistent_balances
         }, f)
 
 def load_data():
@@ -269,6 +279,7 @@ def load_data():
             stats = {int(k): v for k, v in data.get("stats", {}).items()}
             lifetime_stats = {int(k): v for k, v in data.get("lifetime_stats", {}).items()}
             last_session_stats = {int(k): v for k, v in data.get("last_session_stats", {}).items()}
+            persistent_balances = {int(k): v for k, v in data.get("persistent_balances", {}).items()}
         print('[✅] Data successfully loaded.')
     except (FileNotFoundError, json.JSONDecodeError):
         print('[❌] Failed to load data. Starting with empty state.')
@@ -336,6 +347,10 @@ async def endsession(interaction: nextcord.Interaction):
     embed.add_field(name="Most Bets Placed", value=get_name(most_bets), inline=False)
     if best_win_rate:
         embed.add_field(name="Best Win % (2+ bets)", value=f"{get_name(best_win_rate)} ({best_win_pct:.1f}%)", inline=False)
+    
+    for uid in stats:
+        net_gain = stats[uid].get("total_won", 0) - stats[uid].get("total_lost", 0)
+        persistent_balances[uid] = persistent_balances.get(uid, 1000) + net_gain
 
     await interaction.response.send_message(embed=embed)
 
@@ -401,6 +416,7 @@ async def laststats(interaction: nextcord.Interaction):
 async def balance(interaction: nextcord.Interaction):
     user_id = ctx.author.id
     balance = balances.get(user_id, 1000)
+    persistent_balance = persistent_balances.get(user_id, 1000)
     currently_bet = sum(
         bet["wagers"].get(user_id, {}).get("amount", 0)
         for bet in bets.values() if not bet.get("locked")
@@ -410,6 +426,7 @@ async def balance(interaction: nextcord.Interaction):
         color=nextcord.Color.gold()
     )
     embed.add_field(name="Current Balance", value=balance)
+    embed.add_field(name="Persistent Balance", value=persistent_balance)
     embed.add_field(name="Currently Wagered", value=currently_bet)
     await interaction.response.send_message(embed=embed)
 
