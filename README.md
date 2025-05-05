@@ -76,7 +76,7 @@ A session-based Discord betting bot built with 🐍 Python + ⚡ Nextcord, using
 
 This bot does **not** use real money.  
 Use it responsibly, and don't make your friends cry. 😢🎉
-
+This bot was made for my friends to make silly bets on silly things.
 ---
 
 ## ✨ Now go forth and bet like champions. Or fools. You decide. 🎭
