@@ -167,7 +167,7 @@ Total Pot: **{total_pot}**
                 user_balance = balances.get(uid, 1000)
                 try:
                     await interaction.followup.send(
-                        content=f"💰 {member.mention}, your new balance is: **{user_balance}** credits.",
+                        content="✅ Bet resolved! Use `/balance` to see your updated credits.",
                         ephemeral=True
                     )
                 except nextcord.HTTPException:
@@ -270,25 +270,22 @@ def save_data():
         }, f)
 
 def load_data():
-    global balances, stats, lifetime_stats, last_session_stats
-    print('[📂] Attempting to load persistent data...')
-    if not os.path.exists('data.json'):
-        print('[⚠️] data.json not found. Starting fresh.')
-        return
+    global balances, persistent_balances, stats, lifetime_stats, last_session_stats
     try:
         with open("data.json", "r") as f:
             data = json.load(f)
             balances = {int(k): v for k, v in data.get("balances", {}).items()}
+            persistent_balances = {int(k): v for k, v in data.get("persistent_balances", {}).items()}  # THIS LINE
             stats = {int(k): v for k, v in data.get("stats", {}).items()}
             lifetime_stats = {int(k): v for k, v in data.get("lifetime_stats", {}).items()}
             last_session_stats = {int(k): v for k, v in data.get("last_session_stats", {}).items()}
-            persistent_balances = {int(k): v for k, v in data.get("persistent_balances", {}).items()}
-        print('[✅] Data successfully loaded.')
-    except (FileNotFoundError, json.JSONDecodeError):
-        print('[❌] Failed to load data. Starting with empty state.')
-        pass
+        print("[✅] Loaded data.json successfully.")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"[⚠️] Could not load data.json: {e}")
+
 
 load_data()
+print(f"[DEBUG] Persistent balances loaded: {persistent_balances}")
 session_active = False
 save_data()
 print("[🫰] Ready to accept your money.")
