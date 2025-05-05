@@ -40,6 +40,7 @@ class WagerModal(Modal):
         user_id = interaction.user.id
 
         # Pick the right balance source
+        print(f"[DEBUG] Using {'persistent' if self.use_persistent_balance else 'session'} balance for user {user_id}")
         balance_dict = persistent_balances if self.use_persistent_balance else balances
         user_balance = balance_dict.get(user_id, 1000)
 
@@ -186,13 +187,17 @@ class CancelBetButton(Button):
 
 
 class WagerButton(Button):
-    def __init__(self, label, option, message_id):
+    def __init__(self, label, option, message_id, use_persistent_balance=False):
         super().__init__(label=label, style=nextcord.ButtonStyle.primary)
         self.option = option
         self.message_id = message_id
+        self.use_persistent_balance = use_persistent_balance
 
     async def callback(self, interaction: nextcord.Interaction):
-        await interaction.response.send_modal(WagerModal(self.option, self.message_id))
+        await interaction.response.send_modal(
+            WagerModal(self.option, self.message_id, use_persistent_balance=self.use_persistent_balance)
+        )
+
 
 @bot.slash_command(name="createbet", description="Create a new bet")
 @commands.has_permissions(manage_guild=True)
@@ -539,7 +544,7 @@ async def createfunbet(
     view = View(timeout=None)
     for i, option in enumerate(options):
         emoji = EMOJI_MAP[i]
-        view.add_item(WagerButton(label=f"{emoji} {option}", option=option, message_id=msg.id))
+        view.add_item(WagerButton(label=f"{emoji} {option}", option=option, message_id=msg.id, use_persistent_balance=True))
 
     view.add_item(LockBetButton(msg.id))
     view.add_item(CancelBetButton(msg.id))
@@ -605,7 +610,7 @@ load_dotenv()
 @bot.event
 async def on_ready():
     await bot.sync_application_commands()
-    cmds = await bot.get_application_commands()
+    cmds = bot.get_application_commands()
     
     print(f"[🤖] Logged in as {bot.user}")
     print(f"Loaded commands: {[cmd.name for cmd in cmds]}")
