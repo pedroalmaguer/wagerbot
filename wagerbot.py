@@ -341,7 +341,7 @@ async def endsession(interaction: nextcord.Interaction):
                 best_win_rate = uid
 
     def get_name(uid):
-        member = ctx.guild.get_member(uid)
+        member = interaction.guild.get_member(uid)
         return member.display_name if member else f"User {uid}"
 
     embed = nextcord.Embed(title="📊 Session Highlights", color=nextcord.Color.purple())
@@ -397,7 +397,7 @@ async def stats_command(interaction: nextcord.Interaction):
 
 @bot.slash_command(name="laststats", description="View your last session stats")
 async def laststats(interaction: nextcord.Interaction):
-    user_id = ctx.author.id
+    user_id = interaction.author.id
     user_stats = last_session_stats.get(user_id, {
         "bets_placed": 0,
         "total_wagered": 0,
@@ -417,9 +417,8 @@ async def laststats(interaction: nextcord.Interaction):
 
 @bot.slash_command(name="balance", description="Check your balance")
 async def balance(interaction: nextcord.Interaction):
-    user_id = ctx.author.id
-    balance = balances.get(user_id, 1000)
-    persistent_balance = persistent_balances.get(user_id, 1000)
+    user_id = interaction.user.id
+    balance = persistent_balances.get(user_id, 1000)  # persistent for non-session bets
     currently_bet = sum(
         bet["wagers"].get(user_id, {}).get("amount", 0)
         for bet in bets.values() if not bet.get("locked")
@@ -428,8 +427,7 @@ async def balance(interaction: nextcord.Interaction):
         title=f"💰 Balance for {interaction.user.display_name}",
         color=nextcord.Color.gold()
     )
-    embed.add_field(name="Current Balance", value=balance)
-    embed.add_field(name="Persistent Balance", value=persistent_balance)
+    embed.add_field(name="Persistent Balance", value=balance)
     embed.add_field(name="Currently Wagered", value=currently_bet)
     await interaction.response.send_message(embed=embed)
 
@@ -446,7 +444,7 @@ async def rankings(interaction: nextcord.Interaction):
     embed = nextcord.Embed(title="🏆 Session Rankings", color=nextcord.Color.gold())
 
     for rank, (uid, data) in enumerate(sorted_users[:10], start=1):
-        member = ctx.guild.get_member(uid)
+        member = interaction.guild.get_member(uid)
         name = member.display_name if member else f"User {uid}"
         embed.add_field(
             name=f"#{rank} - {name}",
@@ -466,7 +464,7 @@ async def lifetimerankings(interaction: nextcord.Interaction):
     embed = nextcord.Embed(title="🌐 Lifetime Rankings", color=nextcord.Color.green())
 
     for rank, (uid, data) in enumerate(sorted_users[:10], start=1):
-        member = ctx.guild.get_member(uid)
+        member = interaction.guild.get_member(uid)
         name = member.display_name if member else f"User {uid}"
         embed.add_field(
             name=f"#{rank} - {name}",
@@ -478,7 +476,7 @@ async def lifetimerankings(interaction: nextcord.Interaction):
 
 @bot.slash_command(name="lifetimestats", description="View your lifetime stats")
 async def lifetimestats(interaction: nextcord.Interaction):
-    user_id = ctx.author.id
+    user_id = interaction.author.id
     user_stats = lifetime_stats.get(user_id, {
         "bets_placed": 0,
         "total_wagered": 0,
