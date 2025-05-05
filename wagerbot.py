@@ -241,7 +241,7 @@ balances = {}
 stats = {}
 lifetime_stats = {}
 last_session_stats = {}
-
+print("[🤌] Bot start. Bring on the degenerecy.")
 # Persistence
 import json
 
@@ -258,6 +258,10 @@ def save_data():
 
 def load_data():
     global balances, stats, lifetime_stats, last_session_stats
+    print('[📂] Attempting to load persistent data...')
+    if not os.path.exists('data.json'):
+        print('[⚠️] data.json not found. Starting fresh.')
+        return
     try:
         with open("data.json", "r") as f:
             data = json.load(f)
@@ -265,13 +269,15 @@ def load_data():
             stats = {int(k): v for k, v in data.get("stats", {}).items()}
             lifetime_stats = {int(k): v for k, v in data.get("lifetime_stats", {}).items()}
             last_session_stats = {int(k): v for k, v in data.get("last_session_stats", {}).items()}
+        print('[✅] Data successfully loaded.')
     except (FileNotFoundError, json.JSONDecodeError):
+        print('[❌] Failed to load data. Starting with empty state.')
         pass
 
 load_data()
 session_active = False
 save_data()
-print("[🛑] Session ended.")
+print("[🫰] Ready to accept your money.")
 
 @bot.slash_command(name="startsession", description="Start a new betting session")
 @commands.has_permissions(manage_guild=True)
