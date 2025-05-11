@@ -310,44 +310,113 @@ async def get_active_session_id():
         return row[0]
     return None
 
+async def resolve_bet_and_payout(bet_id: int, winning_option_id: int):
+    """Handles resolving a bet and updating payouts."""
+    session_id = await get_active_session_id()
+
+    # 1. Find all wagers on this bet
+    wagers = await db_fetchall(
+        "SELECT user_id, amount, prop_option_id FROM wagers WHERE prop_id = ?",
+        (bet_id,)
+    )
+
+    if not wagers:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [⚠️] No wagers found for bet ID {bet_id}")
+        return
+
+    # 2. Process each wager
+    for user_id, amount, selected_option_id in wagers:
+        if selected_option_id == winning_option_id:
+            # They WON
+            payout_amount = amount * 2  # simple 1:1 payout (you can change for odds)
+
+            # Update bankroll
+            bankroll = await db_fetchone(
+                "SELECT balance FROM bankroll WHERE user_id = ? AND session_id = ?",
+                (user_id, session_id)
+            )
+            current_balance = bankroll[0] if bankroll else 0
+            new_balance = current_balance + payout_amount
+
+            await db_execute(
+                "UPDATE bankroll SET balance = ? WHERE user_id = ? AND session_id = ?",
+                (new_balance, user_id, session_id)
+            )
+
+            # Update wager record
+            await db_execute(
+                "UPDATE wagers SET result = 'win', payout = ? WHERE prop_id = ? AND user_id = ?",
+                (payout_amount, bet_id, user_id)
+            )
+
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🏆] {user_id} won {payout_amount} credits on bet {bet_id}.")
+        else:
+            # They LOST
+            await db_execute(
+                "UPDATE wagers SET result = 'lose', payout = 0 WHERE prop_id = ? AND user_id = ?",
+                (bet_id, user_id)
+            )
+
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💀] {user_id} lost bet {bet_id}.")
+
+    # 3. Mark bet as resolved
+    await db_execute(
+        "UPDATE bet SET is_resolved = 1 WHERE id = ?",
+        (bet_id,)
+    )
+
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [✅] Bet {bet_id} resolved.")
+
 
 # Slash commands
 
-@bot.slash_command(name="balance", description="View your wallet and current session bankroll")
+@bot.slash_command(name="force_sync", description="Force sync application commands")
+async def force_sync(interaction: nextcord.Interaction):
+    await bot.sync_application_commands()
+    await interaction.response.send_message("🔄 Commands synced.", ephemeral=True)
+
+
+@bot.slash_command(name="balance", description="Check your persistent and session balances")
 async def balance(interaction: nextcord.Interaction):
     user_id = interaction.user.id
+    session_id = await get_active_session_id()
 
-    # Wallet (persistent balance)
-    wallet_row = await db_fetchone(
-        "SELECT balance FROM wallet WHERE user_id = (SELECT id FROM users WHERE discord_id = ?)",
-        (str(user_id),)
-    )
-    wallet_balance = wallet_row[0] if wallet_row else 1000
+    persistent_balance_row = await db_fetchone("SELECT balance FROM wallet WHERE user_id = ?", (user_id,))
+    persistent_balance = persistent_balance_row[0] if persistent_balance_row else 1000
 
-    # Find active session
-    session_row = await db_fetchone(
-        "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
-    )
-    if session_row:
-        session_id = session_row[0]
-        # Bankroll (session-specific balance)
-        bankroll_row = await db_fetchone(
-            "SELECT balance FROM bankroll WHERE user_id = (SELECT id FROM users WHERE discord_id = ?) AND session_id = ?",
-            (str(user_id), session_id)
-        )
-        bankroll_balance = bankroll_row[0] if bankroll_row else 1000
-    else:
-        bankroll_balance = "No active session"
+    session_balance_row = await db_fetchone("SELECT balance FROM bankroll WHERE user_id = ? AND session_id = ?", (user_id, session_id))
+    session_balance = session_balance_row[0] if session_balance_row else 1000
 
-    embed = nextcord.Embed(
-        title=f"💰 Balance for {interaction.user.display_name}",
-        color=nextcord.Color.green()
-    )
-    embed.add_field(name="Wallet (Persistent)", value=wallet_balance, inline=True)
-    embed.add_field(name="Session Bankroll", value=bankroll_balance, inline=True)
+    session_wagered_row = await db_fetchone("SELECT SUM(amount) FROM wagers WHERE user_id = ? AND session_id = ? AND result = 'pending'", (user_id, session_id))
+    session_wagered = session_wagered_row[0] if session_wagered_row and session_wagered_row[0] else 0
+
+    persistent_wagered_row = await db_fetchone("SELECT SUM(amount) FROM wagers WHERE user_id = ? AND session_id IS NULL AND result = 'pending'", (user_id,))
+    persistent_wagered = persistent_wagered_row[0] if persistent_wagered_row and persistent_wagered_row[0] else 0
+
+    embed = nextcord.Embed(title=f"💰 {interaction.user.display_name} Balances", color=nextcord.Color.green())
+    embed.add_field(name="Persistent Balance", value=f"Available: {persistent_balance}\nWagered: {persistent_wagered}", inline=False)
+    embed.add_field(name="Session Balance", value=f"Available: {session_balance}\nWagered: {session_wagered}", inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+@bot.slash_command(name="mywagers", description="View your current active wagers")
+async def mywagers(interaction: nextcord.Interaction):
+    user_id = interaction.user.id
+
+    wagers = await db_fetchall("SELECT prop_id, prop_option_id, amount FROM wagers WHERE user_id = ? AND result = 'pending'", (user_id,))
+
+    if not wagers:
+        await interaction.response.send_message("You have no active wagers.", ephemeral=True)
+        return
+
+    description = ""
+    for wager in wagers:
+        bet_id, option_id, amount = wager
+        description += f"Bet ID {bet_id} | Option ID {option_id} | Amount: {amount}\n"
+
+    embed = nextcord.Embed(title=f"🎲 {interaction.user.display_name}'s Active Wagers", description=description, color=nextcord.Color.blurple())
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.slash_command(name="createbet", description="Start creating a new bet")
 @commands.has_permissions(manage_guild=True)
@@ -357,22 +426,28 @@ async def createbet(interaction: nextcord.Interaction):
 @bot.slash_command(name="startsession", description="Start a new betting session")
 @commands.has_permissions(manage_guild=True)
 async def startsession(interaction: nextcord.Interaction):
-    # First, close any open sessions
-    await db_execute("UPDATE sessions SET is_active = 0 WHERE is_active = 1")
-
-    # Create new session
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    await db_execute(
-        "INSERT INTO sessions (name, description, is_active, created_at) VALUES (?, ?, 1, ?)",
-        ("Session Started", "A new betting session has begun!", now)
-    )
-
-    session_row = await db_fetchone(
+    # Check if an active session already exists
+    existing_session = await db_fetchone(
         "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
     )
-    session_id = session_row[0]
+    print(f"[DEBUG] Existing active session: {existing_session}")
 
-    await interaction.response.send_message(f"🟢 Session {session_id} started successfully.", ephemeral=False)
+    if existing_session:
+        await interaction.response.send_message(
+            f"⚠️ An active session (ID {existing_session[0]}) already exists. You must end it first with `/endsession`.",
+            ephemeral=True
+        )
+        return
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    await db_execute(
+        "INSERT INTO sessions (name, description, created_at, is_active) VALUES (?, ?, ?, ?)",
+        (f"Session {now}", "New session started.", now, 1)
+    )
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🟢] Started a new session.")
+
+    await interaction.response.send_message("🟢 A new betting session has been started!", ephemeral=False)
+
 
 @bot.slash_command(name="endsession", description="End the current betting session")
 @commands.has_permissions(manage_guild=True)
@@ -396,43 +471,78 @@ async def endsession(interaction: nextcord.Interaction):
         (session_id,)
     )
 
-    if not users:
-        await interaction.response.send_message("⚠️ No participants found for rewards.", ephemeral=True)
-        return
+    payouts = []
+    if users:
+        multipliers = [2.0, 1.8, 1.6, 1.4]  # Top 1-4
+        default_multiplier = 1.2
 
-    # Reward multipliers
-    multipliers = [2.0, 1.8, 1.6, 1.4]  # Top 1-4
-    default_multiplier = 1.2
+        for idx, (user_id, balance) in enumerate(users):
+            if balance <= 0:
+                continue  # Skip broke users
 
-    result_lines = []
-    for idx, (user_id, balance) in enumerate(users):
-        if balance <= 0:
-            continue  # No bonus if no bankroll
+            multiplier = multipliers[idx] if idx < len(multipliers) else default_multiplier
+            bonus = int(balance * multiplier)
 
-        multiplier = multipliers[idx] if idx < len(multipliers) else default_multiplier
-        bonus = int(balance * multiplier)
+            wallet_row = await db_fetchone("SELECT balance FROM wallet WHERE user_id = ?", (user_id,))
+            if wallet_row:
+                await db_execute("UPDATE wallet SET balance = balance + ? WHERE user_id = ?", (bonus, user_id))
+            else:
+                await db_execute("INSERT INTO wallet (user_id, balance) VALUES (?, ?)", (user_id, bonus))
 
-        # Update wallet
-        wallet_row = await db_fetchone("SELECT balance FROM wallet WHERE user_id = ?", (user_id,))
-        if wallet_row:
-            await db_execute("UPDATE wallet SET balance = balance + ? WHERE user_id = ?", (bonus, user_id))
-        else:
-            await db_execute("INSERT INTO wallet (user_id, balance) VALUES (?, ?)", (user_id, bonus))
+            user_obj = interaction.guild.get_member(user_id)
+            username = user_obj.display_name if user_obj else f"User {user_id}"
+            payouts.append(f"**{idx+1}. {username}** ➔ {balance} bankroll ➔ 🪙 {bonus} added to wallet (x{multiplier})")
 
-        # Add to the results
-        user_obj = interaction.guild.get_member(user_id)
-        username = user_obj.display_name if user_obj else f"User {user_id}"
-        result_lines.append(f"**{idx+1}. {username}** ➔ {balance} bankroll ➔ 🪙 {bonus} added to wallet (x{multiplier})")
+    # Clear bankrolls after rewards
+    await db_execute("DELETE FROM bankroll WHERE session_id = ?", (session_id,))
 
-    # Build embed
-    embed = nextcord.Embed(
+    # --- 📊 New: Session Summary Stats
+    total_wagers = await db_fetchone(
+        "SELECT COUNT(*), SUM(amount) FROM wagers WHERE session_id = ?", (session_id,)
+    )
+    wager_count = total_wagers[0] or 0
+    total_amount = total_wagers[1] or 0
+
+    top_users = await db_fetchall(
+        """
+        SELECT u.username, SUM(w.amount) as total_wagered
+        FROM wagers w
+        JOIN users u ON w.user_id = u.id
+        WHERE w.session_id = ?
+        GROUP BY u.id
+        ORDER BY total_wagered DESC
+        LIMIT 5
+        """,
+        (session_id,)
+    )
+
+    # First embed: Rewards
+    rewards_embed = nextcord.Embed(
         title="🔴 Session Ended - Rewards",
-        description="\n".join(result_lines),
+        description="\n".join(payouts) if payouts else "No eligible participants.",
         color=nextcord.Color.red()
     )
-    embed.set_footer(text=f"Session ID {session_id}")
+    rewards_embed.set_footer(text=f"Session ID {session_id}")
 
-    await interaction.response.send_message(embed=embed, ephemeral=False)
+    # Second embed: Summary Stats
+    stats_embed = nextcord.Embed(
+        title="📊 Session Summary",
+        color=nextcord.Color.blurple()
+    )
+    stats_embed.add_field(name="Total Bets Placed", value=wager_count, inline=True)
+    stats_embed.add_field(name="Total Amount Wagered", value=total_amount, inline=True)
+
+    if top_users:
+        leaderboard = "\n".join(
+            [f"**{idx+1}. {name}** ➔ {amt} wagered" for idx, (name, amt) in enumerate(top_users)]
+        )
+        stats_embed.add_field(name="Top Wagerers", value=leaderboard, inline=False)
+
+    stats_embed.set_footer(text=f"Session ID {session_id}")
+
+    # Send both embeds
+    await interaction.response.send_message(embed=rewards_embed, ephemeral=False)
+    await interaction.followup.send(embed=stats_embed, ephemeral=False)
 
 
 @bot.slash_command(name="wager", description="Place a wager on an active bet")
