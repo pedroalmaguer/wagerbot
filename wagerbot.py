@@ -37,59 +37,51 @@ class WagerModal(Modal):
         self.amount = TextInput(label="Enter your wager amount", required=True)
         self.add_item(self.amount)
 
-    async def callback(self, interaction: nextcord.Interaction):
-        user_id = interaction.user.id
+async def callback(self, interaction: nextcord.Interaction):
+    try:
+        amount = int(self.amount.value)
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await interaction.response.send_message("Invalid amount.", ephemeral=True)
+        return
+
+    user_id = interaction.user.id
+
+    if self.use_persistent_balance:
+        balance_row = await db_fetchone("SELECT balance FROM wallet WHERE user_id = ?", (user_id,))
+        user_balance = balance_row[0] if balance_row else 1000
+    else:
         session_id = await get_active_session_id()
+        balance_row = await db_fetchone("SELECT balance FROM bankroll WHERE user_id = ? AND session_id = ?", (user_id, session_id))
+        user_balance = balance_row[0] if balance_row else 1000
 
-        try:
-            amount = int(self.amount.value)
-            if amount <= 0:
-                raise ValueError
-        except ValueError:
-            await interaction.response.send_message("Invalid amount.", ephemeral=True)
-            return
+    if amount > user_balance:
+        await interaction.response.send_message("Insufficient funds.", ephemeral=True)
+        return
 
-        # Fetch option_id matching the label
-        option = await db_fetchone(
-            "SELECT id FROM bet_options WHERE label = ? AND prop_id = ?",
-            (self.option_label, self.bet_id)
-        )
-        if not option:
-            await interaction.response.send_message("Option not found.", ephemeral=True)
-            return
+    new_balance = user_balance - amount
 
-        option_id = option[0]
-
-        # Decide which balance to use
-        if self.use_wallet:
-            balance_row = await db_fetchone("SELECT balance FROM wallet WHERE user_id = ?", (user_id,))
-            balance = balance_row[0] if balance_row else 1000
-        else:
-            balance_row = await db_fetchone("SELECT balance FROM bankroll WHERE user_id = ? AND session_id = ?", (user_id, session_id))
-            balance = balance_row[0] if balance_row else 1000
-
-        if amount > balance:
-            await interaction.response.send_message("Insufficient balance.", ephemeral=True)
-            return
-
-        # Deduct balance
-        if self.use_wallet:
-            await db_execute("UPDATE wallet SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
-        else:
-            await db_execute("UPDATE bankroll SET balance = balance - ? WHERE user_id = ? AND session_id = ?", (amount, user_id, session_id))
-
-        # Insert wager
+    # 🔥 🔥 🔥  DO THE DATABASE UPDATE HERE
+    if self.use_persistent_balance:
         await db_execute(
-            "INSERT INTO wagers (user_id, session_id, prop_id, prop_option_id, amount, odds, result, payout) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, session_id, self.bet_id, option_id, amount, 100, 'pending', 0)
+            "UPDATE wallet SET balance = ? WHERE user_id = ?",
+            (new_balance, user_id)
+        )
+    else:
+        await db_execute(
+            "UPDATE bankroll SET balance = ? WHERE user_id = ? AND session_id = ?",
+            (new_balance, user_id, session_id)
         )
 
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💸] {interaction.user.display_name} wagered {amount} on '{self.option_label}'")
+    # (then whatever code you already had for updating the bet itself goes here)
+    # like inserting into wagers or updating the message
 
-        await interaction.response.send_message(
-            f"Successfully wagered {amount} credits on {self.option_label}.",
-            ephemeral=True
-        )
+    await interaction.response.send_message(
+        f"Wagered {amount} on {self.option_label}. Remaining balance: {new_balance}",
+        ephemeral=True
+    )
+
 
 class WagerButton(Button):
     def __init__(self, label: str, option_label: str, bet_id: int, use_wallet: bool = False):
