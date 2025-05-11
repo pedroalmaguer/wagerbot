@@ -310,62 +310,63 @@ async def get_active_session_id():
         return row[0]
     return None
 
-async def resolve_bet_and_payout(bet_id: int, winning_option_id: int):
-    """Handles resolving a bet and updating payouts."""
+async def resolve_bet_and_payout(interaction: nextcord.Interaction, bet_id: int, winning_option_id: int):
     session_id = await get_active_session_id()
 
-    # 1. Find all wagers on this bet
+    # Mark the bet as resolved
+    await db_execute("UPDATE bet SET is_resolved = 1 WHERE id = ?", (bet_id,))
+
+    # Mark the winning option
+    await db_execute("UPDATE bet_options SET is_winner = 1 WHERE id = ?", (winning_option_id,))
+
+    # Find all wagers
     wagers = await db_fetchall(
         "SELECT user_id, amount, prop_option_id FROM wagers WHERE prop_id = ?",
         (bet_id,)
     )
 
-    if not wagers:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [⚠️] No wagers found for bet ID {bet_id}")
-        return
+    result_lines = []
 
-    # 2. Process each wager
-    for user_id, amount, selected_option_id in wagers:
-        if selected_option_id == winning_option_id:
-            # They WON
-            payout_amount = amount * 2  # simple 1:1 payout (you can change for odds)
+    for user_id, amount, prop_option_id in wagers:
+        won = prop_option_id == winning_option_id
+        if won:
+            odds_row = await db_fetchone(
+                "SELECT odds FROM bet_options WHERE id = ?",
+                (prop_option_id,)
+            )
+            odds = odds_row[0] if odds_row else 100
+
+            payout = int(amount * (odds / 100))
 
             # Update bankroll
-            bankroll = await db_fetchone(
-                "SELECT balance FROM bankroll WHERE user_id = ? AND session_id = ?",
-                (user_id, session_id)
-            )
-            current_balance = bankroll[0] if bankroll else 0
-            new_balance = current_balance + payout_amount
-
             await db_execute(
-                "UPDATE bankroll SET balance = ? WHERE user_id = ? AND session_id = ?",
-                (new_balance, user_id, session_id)
+                "UPDATE bankroll SET balance = balance + ? WHERE user_id = ? AND session_id = ?",
+                (payout, user_id, session_id)
             )
 
-            # Update wager record
+            # Update wager result
             await db_execute(
-                "UPDATE wagers SET result = 'win', payout = ? WHERE prop_id = ? AND user_id = ?",
-                (payout_amount, bet_id, user_id)
+                "UPDATE wagers SET result = 'win', payout = ? WHERE user_id = ? AND prop_id = ?",
+                (payout, user_id, bet_id)
             )
 
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🏆] {user_id} won {payout_amount} credits on bet {bet_id}.")
+            user_obj = interaction.guild.get_member(user_id)
+            username = user_obj.display_name if user_obj else f"User {user_id}"
+            result_lines.append(f"🎉 **{username}** won {payout} credits!")
+
         else:
-            # They LOST
             await db_execute(
-                "UPDATE wagers SET result = 'lose', payout = 0 WHERE prop_id = ? AND user_id = ?",
-                (bet_id, user_id)
+                "UPDATE wagers SET result = 'lose' WHERE user_id = ? AND prop_id = ?",
+                (user_id, bet_id)
             )
 
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💀] {user_id} lost bet {bet_id}.")
-
-    # 3. Mark bet as resolved
-    await db_execute(
-        "UPDATE bet SET is_resolved = 1 WHERE id = ?",
-        (bet_id,)
+    # Final embed with results
+    embed = nextcord.Embed(
+        title="🏁 Bet Resolved!",
+        description="\n".join(result_lines) if result_lines else "No winners this time!",
+        color=nextcord.Color.green()
     )
-
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [✅] Bet {bet_id} resolved.")
+    await interaction.channel.send(embed=embed)
 
 
 # Slash commands
