@@ -62,7 +62,7 @@ async def callback(self, interaction: nextcord.Interaction):
 
     new_balance = user_balance - amount
 
-    # 🔥 🔥 🔥  DO THE DATABASE UPDATE HERE
+    # ✅ Update balance
     if self.use_persistent_balance:
         await db_execute(
             "UPDATE wallet SET balance = ? WHERE user_id = ?",
@@ -74,13 +74,23 @@ async def callback(self, interaction: nextcord.Interaction):
             (new_balance, user_id, session_id)
         )
 
-    # (then whatever code you already had for updating the bet itself goes here)
-    # like inserting into wagers or updating the message
+    # ✅ Insert into wagers table
+    if self.use_persistent_balance:
+        wager_session_id = None
+    else:
+        wager_session_id = session_id
 
+    await db_execute(
+        "INSERT INTO wagers (user_id, session_id, prop_id, prop_option_id, amount, odds, result, payout) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, wager_session_id, self.message_id, None, amount, 100, "pending", 0)
+    )
+
+    # ✅ Success message
     await interaction.response.send_message(
         f"Wagered {amount} on {self.option_label}. Remaining balance: {new_balance}",
         ephemeral=True
     )
+
 
 
 class WagerButton(Button):
