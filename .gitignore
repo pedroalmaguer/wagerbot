@@ -5,11 +5,11 @@ __pycache__/
 *.pyd
 *.pyc
 temp.py
-
+bet.py
 
 # Environment
 .env
-
+.cursorrules
 
 # VSCode or other IDE/editor folders
 .vscode/
@@ -23,7 +23,9 @@ Thumbs.db
 *.log
 *.tmp
 data.json
-
+wagerbot.db
+schema.sql
+Update.sql
 # Virtual environment folders
 venv/
 env/
