@@ -28,12 +28,45 @@ EMOJI_MAP = [
 ]
 
 
-class WagerModal(Modal):
-    def __init__(self, option_label, bet_id, use_wallet=False):
-        super().__init__(title=f"Wager on '{option_label}'")
+cclass WagerButton(Button):
+    def __init__(self, label: str, option_label: str, bet_id: int, use_wallet: bool = False):
+        super().__init__(label=label, style=nextcord.ButtonStyle.primary)
         self.option_label = option_label
         self.bet_id = bet_id
         self.use_wallet = use_wallet
+
+    async def callback(self, interaction: nextcord.Interaction):
+        # 🔥 Debugging prints
+        print(f"[WAGER BUTTON DEBUG] {interaction.user.display_name} pressed button - Option: {self.option_label}, Bet ID: {self.bet_id}")
+        
+        # Check if this is a fun bet (wallet-only)
+        bet_details = await db_fetchone(
+            "SELECT bet_type FROM bet WHERE id = ?", 
+            (self.bet_id,)
+        )
+        is_fun_bet = bet_details and bet_details[0] == "funbet"
+        
+        # If it's a fun bet, force wallet usage
+        if is_fun_bet:
+            self.use_wallet = True
+        
+        # Open the modal for wagering
+        modal = WagerModal(self.option_label, self.bet_id, self.use_wallet, is_fun_bet)
+        await interaction.response.send_modal(modal)
+
+class WagerModal(Modal):
+    def __init__(self, option_label, bet_id, use_wallet=False, is_fun_bet=False):
+        title = f"Wager on '{option_label}'"
+        if use_wallet:
+            title = f"💰 Wallet Wager on '{option_label}'"
+        if is_fun_bet:
+            title = f"🎯 Fun Bet: Wager on '{option_label}'"
+            
+        super().__init__(title=title)
+        self.option_label = option_label
+        self.bet_id = bet_id
+        self.use_wallet = use_wallet
+        self.is_fun_bet = is_fun_bet
         self.amount = TextInput(
             label="Enter your wager amount", 
             placeholder="Amount to wager", 
@@ -54,16 +87,21 @@ class WagerModal(Modal):
         user_id = await ensure_user_exists(interaction.user)
         print(f"[WAGER DEBUG] User: {interaction.user.display_name} (ID: {interaction.user.id}), Internal User ID: {user_id}")
 
-        # 🔥 Find active session
-        session_row = await db_fetchone(
-            "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
-        )
-        if not session_row:
-            print("[WAGER DEBUG] No active session found")
-            await interaction.response.send_message("⚠️ No active session.", ephemeral=True)
-            return
-        session_id = session_row[0]
-        print(f"[WAGER DEBUG] Active Session ID: {session_id}")
+        # Get session info if applicable
+        session_id = None
+        if not self.is_fun_bet:
+            # 🔥 Find active session
+            session_row = await db_fetchone(
+                "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+            )
+            if not session_row:
+                print("[WAGER DEBUG] No active session found")
+                if not self.use_wallet:  # Only block non-wallet bets
+                    await interaction.response.send_message("⚠️ No active session.", ephemeral=True)
+                    return
+            else:
+                session_id = session_row[0]
+                print(f"[WAGER DEBUG] Active Session ID: {session_id}")
 
         # 🔥 Check bet exists and is not resolved
         bet_row = await db_fetchone(
@@ -92,8 +130,8 @@ class WagerModal(Modal):
 
         # 🔥 Check balance
         try:
-            if self.use_wallet:
-                # Ensure wallet entry exists
+            if self.use_wallet or self.is_fun_bet:
+                # Use wallet balance
                 wallet_row = await db_fetchone(
                     "SELECT balance FROM wallet WHERE user_id = ?", 
                     (user_id,)
@@ -137,7 +175,7 @@ class WagerModal(Modal):
                 return
 
             # 🔥 Deduct amount
-            if self.use_wallet:
+            if self.use_wallet or self.is_fun_bet:
                 await db_execute(
                     "UPDATE wallet SET balance = balance - ? WHERE user_id = ?",
                     (amount, user_id)
@@ -157,34 +195,21 @@ class WagerModal(Modal):
                 (user_id, session_id, prop_id, prop_option_id, amount, odds, result, payout, from_wallet)
                 VALUES (?, ?, ?, ?, ?, 100, 'pending', 0, ?)
                 """,
-                (user_id, session_id, self.bet_id, option_id, amount, int(self.use_wallet))
+                (user_id, session_id, self.bet_id, option_id, amount, int(self.use_wallet or self.is_fun_bet))
             )
             print(f"[WAGER DEBUG] Wager inserted for {interaction.user.display_name}")
 
-            await interaction.response.send_message(
-                f"🎯 Successfully wagered {amount} credits from your **{balance_source}** on '{self.option_label}'.",
-                ephemeral=True
-            )
+            # Create a response message based on bet type
+            if self.is_fun_bet:
+                message = f"🎯 Successfully placed a fun bet of {amount} credits from your **wallet** on '{self.option_label}'."
+            else:
+                message = f"🎯 Successfully wagered {amount} credits from your **{balance_source}** on '{self.option_label}'."
+                
+            await interaction.response.send_message(message, ephemeral=True)
 
         except Exception as e:
             print(f"[WAGER DEBUG] Error during wager for {interaction.user.display_name}: {e}")
             await interaction.response.send_message("An unexpected error occurred while placing your wager.", ephemeral=True)
-
-
-class WagerButton(Button):
-    def __init__(self, label: str, option_label: str, bet_id: int, use_wallet: bool = False):
-        super().__init__(label=label, style=nextcord.ButtonStyle.primary)
-        self.option_label = option_label
-        self.bet_id = bet_id
-        self.use_wallet = use_wallet
-
-    async def callback(self, interaction: nextcord.Interaction):
-        # 🔥 Debugging prints
-        print(f"[WAGER BUTTON DEBUG] {interaction.user.display_name} pressed button - Option: {self.option_label}, Bet ID: {self.bet_id}")
-        
-        # Open the modal for wagering
-        modal = WagerModal(self.option_label, self.bet_id, self.use_wallet)
-        await interaction.response.send_modal(modal)
 
 class WalletTransferModal(Modal):
     def __init__(self, session_id):
