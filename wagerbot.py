@@ -409,7 +409,6 @@ class LockBetButton(Button):
         await db_execute("UPDATE bet SET is_resolved = 1 WHERE id = ?", (self.bet_id,))
         await interaction.response.send_message("✅ Bet has been locked (no more wagers).", ephemeral=True)
 
-
 class CancelBetButton(Button):
     def __init__(self, bet_id: int):
         super().__init__(label="❌ Cancel Bet", style=nextcord.ButtonStyle.danger)
@@ -421,14 +420,21 @@ class CancelBetButton(Button):
         await interaction.response.send_message("❌ Bet cancelled and removed.", ephemeral=True)
 
 class ResolveBetView(View):
-    def __init__(self, bet_id, options):
+    def __init__(self, bet_id, select_options):
         super().__init__(timeout=60)
-        self.add_item(WinnerSelect(bet_id, options))
+        self.add_item(WinnerSelect(bet_id, select_options))
 
 class WinnerSelect(Select):
     def __init__(self, bet_id, options):
         self.bet_id = bet_id
-        select_options = [nextcord.SelectOption(label=opt[1], value=str(opt[0])) for opt in options]
+        
+        # Check if options are already SelectOption objects
+        if options and isinstance(options[0], nextcord.SelectOption):
+            select_options = options
+        else:
+            # Convert tuples/lists to SelectOption objects
+            select_options = [nextcord.SelectOption(label=opt[1], value=str(opt[0])) for opt in options]
+            
         super().__init__(placeholder="Select the winning option", min_values=1, max_values=1, options=select_options)
 
     async def callback(self, interaction: nextcord.Interaction):
@@ -436,10 +442,14 @@ class WinnerSelect(Select):
 
         # Fetch bet details
         bet_details = await db_fetchone(
-            "SELECT name FROM bet WHERE id = ?", 
+            "SELECT name, bet_type FROM bet WHERE id = ?", 
             (self.bet_id,)
         )
         bet_name = bet_details[0] if bet_details else "Unnamed Bet"
+        bet_type = bet_details[1] if bet_details else "moneyline"
+        
+        # Check if this is a fun bet (wallet only)
+        is_fun_bet = bet_type == "funbet"
 
         # Fetch winning option label
         winning_option = await db_fetchone(
@@ -458,10 +468,12 @@ class WinnerSelect(Select):
 
         # Update wagers: mark win/loss
         winning_wagers = await db_fetchall(
-            "SELECT id, user_id, amount FROM wagers WHERE prop_id = ? AND prop_option_id = ?", (self.bet_id, winning_option_id)
+            "SELECT id, user_id, amount, from_wallet FROM wagers WHERE prop_id = ? AND prop_option_id = ?", 
+            (self.bet_id, winning_option_id)
         )
         losing_wagers = await db_fetchall(
-            "SELECT id, user_id, amount FROM wagers WHERE prop_id = ? AND prop_option_id != ?", (self.bet_id, winning_option_id)
+            "SELECT id, user_id, amount, from_wallet FROM wagers WHERE prop_id = ? AND prop_option_id != ?", 
+            (self.bet_id, winning_option_id)
         )
 
         # Prepare tracking for payout summary
@@ -469,35 +481,49 @@ class WinnerSelect(Select):
         payout_details = []
 
         # Pay out winnings 
-        for wager_id, user_id, amount in winning_wagers:
+        for wager_id, user_id, amount, from_wallet in winning_wagers:
             # Calculate payout (simple 2x for now)
             payout = amount * 2
             await db_execute("UPDATE wagers SET result = 'win', payout = ? WHERE id = ?", (payout, wager_id))
             
             # Update the user's balance
-            await db_execute(
-                "UPDATE bankroll SET balance = balance + ? WHERE user_id = ? AND session_id = ?",
-                (payout, user_id, session_id)
-            )
+            if is_fun_bet or from_wallet:
+                # Fun bets always update wallet
+                await db_execute(
+                    "UPDATE wallet SET balance = balance + ? WHERE user_id = ?",
+                    (payout, user_id)
+                )
+            else:
+                # Regular bets update bankroll
+                await db_execute(
+                    "UPDATE bankroll SET balance = balance + ? WHERE user_id = ? AND session_id = ?",
+                    (payout, user_id, session_id)
+                )
 
             # Track for summary
             user_details = await db_fetchone("SELECT username FROM users WHERE id = ?", (user_id,))
             username = user_details[0] if user_details else f"User {user_id}"
-            payout_details.append(f"🎉 **{username}** won {payout} credits")
+            
+            # Indicate if wallet bet
+            wallet_indicator = "💰 " if is_fun_bet or from_wallet else ""
+            payout_details.append(f"{wallet_indicator}🎉 **{username}** won {payout} credits")
 
-        for wager_id, user_id, amount in losing_wagers:
+        for wager_id, user_id, amount, from_wallet in losing_wagers:
             await db_execute("UPDATE wagers SET result = 'lose', payout = 0 WHERE id = ?", (wager_id,))
             
             # Track for summary
             user_details = await db_fetchone("SELECT username FROM users WHERE id = ?", (user_id,))
             username = user_details[0] if user_details else f"User {user_id}"
-            payout_details.append(f"😔 **{username}** lost {amount} credits")
+            
+            # Indicate if wallet bet
+            wallet_indicator = "💰 " if is_fun_bet or from_wallet else ""
+            payout_details.append(f"{wallet_indicator}😔 **{username}** lost {amount} credits")
 
         # Create an embed to show bet resolution
         embed = nextcord.Embed(
-            title="🏆 Bet Resolved",
+            title="🏆 Bet Resolved" if not is_fun_bet else "💰 Fun Bet Resolved",
             description=f"**Bet:** {bet_name}\n**Winning Option:** {winning_label}",
-            color=nextcord.Color.green()
+            color=nextcord.Color.green() if not is_fun_bet else nextcord.Color.gold()
         )
 
         # Add payout details
@@ -506,7 +532,11 @@ class WinnerSelect(Select):
             if len(payout_details) > 10:
                 payout_summary += f"\n... and {len(payout_details) - 10} more"
             embed.add_field(name="Payout Details", value=payout_summary, inline=False)
-
+        
+        # Add footer based on bet type
+        if is_fun_bet:
+            embed.set_footer(text="Fun Bet: All payouts went directly to wallet balances")
+        
         # Send the summary
         await interaction.channel.send(embed=embed)
 
