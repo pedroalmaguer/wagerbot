@@ -368,6 +368,30 @@ async def resolve_bet_and_payout(interaction: nextcord.Interaction, bet_id: int,
     )
     await interaction.channel.send(embed=embed)
 
+# Ensures a user exists in the database. 
+# If not, inserts them using their Discord ID and username.
+async def ensure_user_exists(discord_user: nextcord.User):
+    user_row = await db_fetchone(
+        "SELECT id FROM users WHERE discord_id = ?", (str(discord_user.id),)
+    )
+    if user_row:
+        await db_execute(
+            "UPDATE users SET username = ? WHERE discord_id = ?",
+            (discord_user.display_name, str(discord_user.id))
+        )
+        return user_row[0]
+
+    await db_execute(
+        "INSERT INTO users (discord_id, username) VALUES (?, ?)",
+        (str(discord_user.id), discord_user.display_name)
+    )
+    new_user_row = await db_fetchone(
+        "SELECT id FROM users WHERE discord_id = ?", (str(discord_user.id),)
+    )
+    return new_user_row[0]
+
+
+
 
 # Slash commands
 
