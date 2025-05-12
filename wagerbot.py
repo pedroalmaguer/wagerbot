@@ -984,173 +984,186 @@ async def startsession(interaction: nextcord.Interaction):
         ephemeral=False
     )
 
-@bot.slash_command(name="endsession", description="End the current betting session")
-async def endsession(interaction: nextcord.Interaction):
-    session_row = await db_fetchone(
-        "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
-    )
-    if not session_row:
-        await interaction.response.send_message("⚠️ No active session to end.", ephemeral=True)
-        return
 
-    session_id = session_row[0]
+@bot.slash_command(name="stopsession", description="End the current betting session")
+async def stopsession(interaction: nextcord.Interaction):
+    print(f"[DEBUG] stopsession command invoked by {interaction.user.display_name}")
+    
+    # Immediately acknowledge
+    await interaction.response.defer(ephemeral=False)
+    
+    try:
+        session_row = await db_fetchone(
+            "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+        )
+        if not session_row:
+            await interaction.followup.send("⚠️ No active session to end.")
+            return
 
-    # 🔥 End the session
-    await db_execute("UPDATE sessions SET is_active = 0 WHERE id = ?", (session_id,))
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🔴] Ended session ID {session_id}.")
+        session_id = session_row[0]
+        print(f"[DEBUG] Found active session ID: {session_id}")
 
-    # 🔥 Get all users with bankrolls
-    users = await db_fetchall(
-        "SELECT user_id, balance, from_wallet FROM bankroll WHERE session_id = ? ORDER BY balance DESC",
-        (session_id,)
-    )
+        # End the session
+        await db_execute("UPDATE sessions SET is_active = 0 WHERE id = ?", (session_id,))
+        print(f"[DEBUG] Session {session_id} marked as inactive")
 
-    payouts = []
-    if users:
-        # Multipliers only for wallet transfers
-        wallet_multipliers = [2.5, 2.2, 2.0, 1.8]  # Wallet transfer top 1-4
-        default_wallet_multiplier = 1.6
+        # Get user balances
+        users = await db_fetchall(
+            "SELECT user_id, balance, from_wallet FROM bankroll WHERE session_id = ? ORDER BY balance DESC",
+            (session_id,)
+        )
+        print(f"[DEBUG] Found {len(users)} users with bankrolls")
 
-        for idx, (user_id, balance, from_wallet) in enumerate(users):
-            if balance <= 0:
-                continue  # Skip broke users
+        payouts = []
+        if users:
+            # Multipliers only for wallet transfers
+            wallet_multipliers = [2.5, 2.2, 2.0, 1.8]  # Wallet transfer top 1-4
+            default_wallet_multiplier = 1.6
 
-            # Apply multiplier only for wallet users
-            if from_wallet:
-                multiplier = wallet_multipliers[idx] if idx < len(wallet_multipliers) else default_wallet_multiplier
-                bonus = int(balance * multiplier)
-            else:
-                # Regular users just get their balance
-                multiplier = 1.0
-                bonus = balance
+            for idx, (user_id, balance, from_wallet) in enumerate(users):
+                if balance <= 0:
+                    continue  # Skip broke users
 
-            # Update wallet
-            wallet_row = await db_fetchone("SELECT balance FROM wallet WHERE user_id = ?", (user_id,))
-            if wallet_row:
-                await db_execute("UPDATE wallet SET balance = balance + ? WHERE user_id = ?", (bonus, user_id))
-            else:
-                await db_execute("INSERT INTO wallet (user_id, balance) VALUES (?, ?)", (user_id, bonus))
+                # Apply multiplier only for wallet users
+                if from_wallet:
+                    multiplier = wallet_multipliers[idx] if idx < len(wallet_multipliers) else default_wallet_multiplier
+                    bonus = int(balance * multiplier)
+                else:
+                    # Regular users just get their balance
+                    multiplier = 1.0
+                    bonus = balance
 
-            # Get username
-            user_obj = interaction.guild.get_member(int(user_id))
-            username = user_obj.display_name if user_obj else f"User {user_id}"
-            
-            # Indicate if bonus was from wallet transfer
-            if from_wallet:
-                wallet_indicator = "💎 "
-                multiplier_text = f"(x{multiplier})"
-            else:
-                wallet_indicator = ""
-                multiplier_text = ""
+                # Update wallet
+                wallet_row = await db_fetchone("SELECT balance FROM wallet WHERE user_id = ?", (user_id,))
+                if wallet_row:
+                    await db_execute("UPDATE wallet SET balance = balance + ? WHERE user_id = ?", (bonus, user_id))
+                else:
+                    await db_execute("INSERT INTO wallet (user_id, balance) VALUES (?, ?)", (user_id, bonus))
+
+                # Get username
+                user_obj = interaction.guild.get_member(int(user_id))
+                username = user_obj.display_name if user_obj else f"User {user_id}"
                 
-            payouts.append(f"{wallet_indicator}**{idx+1}. {username}** ➔ {balance} bankroll ➔ 🪙 {bonus} added to wallet {multiplier_text}")
+                # Indicate if bonus was from wallet transfer
+                if from_wallet:
+                    wallet_indicator = "💎 "
+                    multiplier_text = f"(x{multiplier})"
+                else:
+                    wallet_indicator = ""
+                    multiplier_text = ""
+                    
+                payouts.append(f"{wallet_indicator}**{idx+1}. {username}** ➔ {balance} bankroll ➔ 🪙 {bonus} added to wallet {multiplier_text}")
 
-    # 🔥 Clear bankrolls after rewards
-    await db_execute("DELETE FROM bankroll WHERE session_id = ?", (session_id,))
+        # Clear bankrolls after rewards
+        await db_execute("DELETE FROM bankroll WHERE session_id = ?", (session_id,))
 
-    # 🔥 Session Summary Stats
-    total_wagers = await db_fetchone(
-        "SELECT COUNT(*), SUM(amount) FROM wagers WHERE session_id = ? AND from_wallet = 0",
-        (session_id,)
-    )
-    wager_count = total_wagers[0] or 0
-    total_amount = total_wagers[1] or 0
+        # 🔥 Session Summary Stats
+        total_wagers = await db_fetchone(
+            "SELECT COUNT(*), SUM(amount) FROM wagers WHERE session_id = ? AND from_wallet = 0",
+            (session_id,)
+        )
+        wager_count = total_wagers[0] or 0
+        total_amount = total_wagers[1] or 0
 
-    # 🔥 Top users by wagers
-    top_wagers = await db_fetchall(
-        """
-        SELECT 
-            u.id as user_id,
-            u.username, 
-            SUM(w.amount) as total_wagered,
-            SUM(CASE WHEN w.result = 'win' THEN w.payout - w.amount ELSE -w.amount END) as net_result
-        FROM wagers w
-        JOIN users u ON w.user_id = u.id
-        WHERE w.session_id = ? AND w.from_wallet = 0
-        GROUP BY u.id
-        ORDER BY total_wagered DESC
-        LIMIT 5
-        """,
-        (session_id,)
-    )
+        # 🔥 Top users by wagers
+        top_wagers = await db_fetchall(
+            """
+            SELECT 
+                u.id as user_id,
+                u.username, 
+                SUM(w.amount) as total_wagered,
+                SUM(CASE WHEN w.result = 'win' THEN w.payout - w.amount ELSE -w.amount END) as net_result
+            FROM wagers w
+            JOIN users u ON w.user_id = u.id
+            WHERE w.session_id = ? AND w.from_wallet = 0
+            GROUP BY u.id
+            ORDER BY total_wagered DESC
+            LIMIT 5
+            """,
+            (session_id,)
+        )
 
-    # 🔥 Biggest Single Bet Win and Loss
-    biggest_win = await db_fetchone(
-        """
-        SELECT 
-            u.username, 
-            w.payout - w.amount as win_amount,
-            b.name as bet_name,
-            bo.label as option_label
-        FROM wagers w
-        JOIN users u ON w.user_id = u.id
-        JOIN bet b ON w.prop_id = b.id
-        JOIN bet_options bo ON w.prop_option_id = bo.id
-        WHERE w.session_id = ? AND w.result = 'win'
-        ORDER BY win_amount DESC
-        LIMIT 1
-        """,
-        (session_id,)
-    )
+        # 🔥 Biggest Single Bet Win and Loss
+        biggest_win = await db_fetchone(
+            """
+            SELECT 
+                u.username, 
+                w.payout - w.amount as win_amount,
+                b.name as bet_name,
+                bo.label as option_label
+            FROM wagers w
+            JOIN users u ON w.user_id = u.id
+            JOIN bet b ON w.prop_id = b.id
+            JOIN bet_options bo ON w.prop_option_id = bo.id
+            WHERE w.session_id = ? AND w.result = 'win'
+            ORDER BY win_amount DESC
+            LIMIT 1
+            """,
+            (session_id,)
+        )
 
-    biggest_loss = await db_fetchone(
-        """
-        SELECT 
-            u.username, 
-            w.amount as loss_amount,
-            b.name as bet_name,
-            bo.label as option_label
-        FROM wagers w
-        JOIN users u ON w.user_id = u.id
-        JOIN bet b ON w.prop_id = b.id
-        JOIN bet_options bo ON w.prop_option_id = bo.id
-        WHERE w.session_id = ? AND w.result = 'lose'
-        ORDER BY loss_amount DESC
-        LIMIT 1
-        """,
-        (session_id,)
-    )
+        biggest_loss = await db_fetchone(
+            """
+            SELECT 
+                u.username, 
+                w.amount as loss_amount,
+                b.name as bet_name,
+                bo.label as option_label
+            FROM wagers w
+            JOIN users u ON w.user_id = u.id
+            JOIN bet b ON w.prop_id = b.id
+            JOIN bet_options bo ON w.prop_option_id = bo.id
+            WHERE w.session_id = ? AND w.result = 'lose'
+            ORDER BY loss_amount DESC
+            LIMIT 1
+            """,
+            (session_id,)
+        )
 
-    # 🎨 First embed: Rewards
-    rewards_embed = nextcord.Embed(
-        title="🔴 Session Ended - Rewards",
-        description="\n".join(payouts) if payouts else "No eligible participants.",
-        color=nextcord.Color.red()
-    )
-    rewards_embed.set_footer(text=f"Session ID {session_id} • 💎 = Wallet transfer users get multipliers")
+        # 🎨 First embed: Rewards
+        rewards_embed = nextcord.Embed(
+            title="🔴 Session Ended - Rewards",
+            description="\n".join(payouts) if payouts else "No eligible participants.",
+            color=nextcord.Color.red()
+        )
+        rewards_embed.set_footer(text=f"Session ID {session_id} • 💎 = Wallet transfer users get multipliers")
 
-    # 🎨 Second embed: Session Stats
-    stats_embed = nextcord.Embed(
-        title="📊 Session Summary",
-        color=nextcord.Color.blurple()
-    )
-    stats_embed.add_field(name="Total Bets Placed (Bankroll Only)", value=wager_count, inline=True)
-    stats_embed.add_field(name="Total Amount Wagered (Bankroll Only)", value=total_amount, inline=True)
+        # 🎨 Second embed: Session Stats
+        stats_embed = nextcord.Embed(
+            title="📊 Session Summary",
+            color=nextcord.Color.blurple()
+        )
+        stats_embed.add_field(name="Total Bets Placed (Bankroll Only)", value=wager_count, inline=True)
+        stats_embed.add_field(name="Total Amount Wagered (Bankroll Only)", value=total_amount, inline=True)
 
-    if top_wagers:
-        leaderboard = []
-        for idx, (_, name, total_wagered, net_result) in enumerate(top_wagers):
-            net_status = "🟢" if net_result > 0 else "🔴"
-            leaderboard.append(f"**{idx+1}. {name}**\n  💰 Wagered: {total_wagered} | {net_status} Net: {net_result}")
+        if top_wagers:
+            leaderboard = []
+            for idx, (_, name, total_wagered, net_result) in enumerate(top_wagers):
+                net_status = "🟢" if net_result > 0 else "🔴"
+                leaderboard.append(f"**{idx+1}. {name}**\n  💰 Wagered: {total_wagered} | {net_status} Net: {net_result}")
+            
+            stats_embed.add_field(name="Top Wagerers (Bankroll)", value="\n".join(leaderboard), inline=False)
+        else:
+            stats_embed.add_field(name="Top Wagerers", value="No wagers placed.", inline=False)
+
+        # Add Biggest Win and Loss
+        if biggest_win:
+            win_details = f"**{biggest_win[0]}** won {biggest_win[1]} credits\nBet: {biggest_win[2]}\nOption: {biggest_win[3]}"
+            stats_embed.add_field(name="🏆 Biggest Single Bet Win", value=win_details, inline=False)
+
+        if biggest_loss:
+            loss_details = f"**{biggest_loss[0]}** lost {biggest_loss[1]} credits\nBet: {biggest_loss[2]}\nOption: {biggest_loss[3]}"
+            stats_embed.add_field(name="😔 Biggest Single Bet Loss", value=loss_details, inline=False)
+
+        stats_embed.set_footer(text=f"Session ID {session_id} • Only bankroll wagers are counted")
+
+        # 🔥 Send embeds
+        await interaction.followup.send(embed=rewards_embed)
+        await interaction.followup.send(embed=stats_embed)
         
-        stats_embed.add_field(name="Top Wagerers (Bankroll)", value="\n".join(leaderboard), inline=False)
-    else:
-        stats_embed.add_field(name="Top Wagerers", value="No wagers placed.", inline=False)
-
-    # Add Biggest Win and Loss
-    if biggest_win:
-        win_details = f"**{biggest_win[0]}** won {biggest_win[1]} credits\nBet: {biggest_win[2]}\nOption: {biggest_win[3]}"
-        stats_embed.add_field(name="🏆 Biggest Single Bet Win", value=win_details, inline=False)
-
-    if biggest_loss:
-        loss_details = f"**{biggest_loss[0]}** lost {biggest_loss[1]} credits\nBet: {biggest_loss[2]}\nOption: {biggest_loss[3]}"
-        stats_embed.add_field(name="😔 Biggest Single Bet Loss", value=loss_details, inline=False)
-
-    stats_embed.set_footer(text=f"Session ID {session_id} • Only bankroll wagers are counted")
-
-    # 🔥 Send embeds
-    await interaction.response.send_message(embed=rewards_embed, ephemeral=False)
-    await interaction.followup.send(embed=stats_embed, ephemeral=False)
+    except Exception as e:
+        print(f"[ERROR] Error in stopsession command: {e}")
+        await interaction.followup.send(f"⚠️ An error occurred: {str(e)}")
 
 @bot.slash_command(name="wager", description="Place a wager on an active bet")
 async def wager(
@@ -1276,103 +1289,89 @@ async def wager(
         ephemeral=True
     )
 
+@bot.slash_command(name="debug_commands", description="Check what commands Discord knows about")
+async def debug_commands(interaction: nextcord.Interaction):
+    """Debug command to see what commands Discord knows about"""
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        # Get all commands registered in code
+        local_cmds = bot.get_application_commands()
+        local_cmd_list = "\n".join([f"- /{cmd.name} (type: {type(cmd).__name__})" for cmd in local_cmds])
+        
+        # Get all commands registered with Discord API
+        remote_cmds = await bot.fetch_application_commands()
+        remote_cmd_list = "\n".join([f"- /{cmd.name} (id: {cmd.id})" for cmd in remote_cmds])
+        
+        # Create response
+        response = (
+            "## Commands in Code\n"
+            f"{local_cmd_list}\n\n"
+            "## Commands in Discord\n"
+            f"{remote_cmd_list}\n\n"
+        )
+        
+        # Check specifically for endsession
+        endsession_in_code = any(cmd.name == "endsession" for cmd in local_cmds)
+        endsession_in_discord = any(cmd.name == "endsession" for cmd in remote_cmds)
+        
+        response += (
+            "## Check for endsession\n"
+            f"In code: {'✅ YES' if endsession_in_code else '❌ NO'}\n"
+            f"In Discord: {'✅ YES' if endsession_in_discord else '❌ NO'}"
+        )
+        
+        await interaction.followup.send(response, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+
 @bot.event
 async def on_ready():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🫼] Bot is online and ready.")
-
-    
+    print(f"[{now}] [🫼] Bot is online and ready.")
 
     # Initialize database structure
     async with aiosqlite.connect(DB_FILE) as db:
-        # Users table
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            discord_id TEXT,
-            username TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-        ''')
-
-        # Sessions table
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            description TEXT,
-            created_at DATETIME,
-            is_active INTEGER DEFAULT 0
-        )
-        ''')
-
-        # Bankroll table - adding from_wallet column
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS bankroll (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            session_id INTEGER,
-            balance INTEGER DEFAULT 1000,
-            from_wallet INTEGER DEFAULT 0,
-            UNIQUE(user_id, session_id)
-        )
-        ''')
-
-        # Wallet table
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS wallet (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER UNIQUE,
-            balance INTEGER DEFAULT 1000
-        )
-        ''')
-
-        # Bet table
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS bet (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER,
-            name TEXT,
-            description TEXT,
-            bet_type TEXT,
-            is_resolved INTEGER DEFAULT 0
-        )
-        ''')
-
-        # Bet options table
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS bet_options (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            prop_id INTEGER,
-            label TEXT,
-            odds INTEGER DEFAULT 100,
-            is_winner INTEGER DEFAULT 0
-        )
-        ''')
-
-        # Wagers table
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS wagers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            session_id INTEGER,
-            prop_id INTEGER,
-            prop_option_id INTEGER,
-            amount INTEGER,
-            odds INTEGER,
-            result TEXT,
-            payout INTEGER,
-            from_wallet INTEGER DEFAULT 0
-        )
-        ''')
-
+        # Your database initialization code here (keep this part)
         await db.commit()
 
-    cmds = bot.get_application_commands()  # NO await
-    print(f"Registered {len(cmds)} slash commands.")
+    # Clean up old deprecated commands
+    try:
+        print(f"[{now}] [🧹] Cleaning up deprecated commands...")
+        remote_cmds = await bot.fetch_application_commands()
+        
+        # List of commands to remove (deprecated commands)
+        deprecated_names = ["endsession", "finish_session", "stop_session", "simple_endsession"]
+        
+        for cmd in remote_cmds:
+            if cmd.name in deprecated_names:
+                print(f"[{now}] [🗑️] Removing deprecated command: /{cmd.name}")
+                try:
+                    await bot.http.delete_global_application_command(bot.application_id, cmd.id)
+                    print(f"[{now}] [✅] Successfully removed /{cmd.name}")
+                except Exception as del_err:
+                    print(f"[{now}] [❌] Failed to remove /{cmd.name}: {del_err}")
+    except Exception as e:
+        print(f"[{now}] [❌] Error during command cleanup: {e}")
 
-
-
+    # Sync all commands
+    try:
+        print(f"[{now}] [🔄] Syncing commands...")
+        await bot.sync_application_commands()
+        
+        cmds = bot.get_application_commands()
+        print(f"[{now}] [✅] Synced {len(cmds)} commands: {', '.join(['/' + cmd.name for cmd in cmds])}")
+    except Exception as e:
+        print(f"[{now}] [❌] Error syncing commands: {e}")
+        
+    # Show final registered commands
+    try:
+        remote_cmds = await bot.fetch_application_commands()
+        print(f"[{now}] [📋] Commands registered with Discord: {', '.join(['/' + cmd.name for cmd in remote_cmds])}")
+    except Exception as e:
+        print(f"[{now}] [❌] Error fetching commands: {e}")
 
 # Run the bot
 bot.run(os.getenv("DISCORD_BOT_TOKEN"))
