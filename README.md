@@ -15,7 +15,7 @@ A session-based **and standalone** Discord betting bot built with 🐍 Python + 
 - 🧠 Smart ephemeral responses showing win/loss results after each resolved bet
 - 📊 Real-time stats tracking (session, last session, lifetime)
 - 🏆 Rankings (session and lifetime)
-- 📂 Persistent storage via `data.json` (auto-saved and loaded)
+- 📂 Persistent storage via SQLite database
 - 🔍 Autocomplete for faster bet selection
 - 🤫 Clean ephemeral balance updates after bets resolve
 
@@ -26,15 +26,12 @@ A session-based **and standalone** Discord betting bot built with 🐍 Python + 
 | Command               | Description                                          |
 |------------------------|------------------------------------------------------|
 | `/startsession`        | Start a new betting session                         |
-| `/endsession`          | End the current session and display summary         |
-| `/createbet`           | Admin-only: Create a new session-based bet          |
-| `/funbet`              | Admin-only: Create a bet using persistent balances  |
+| `/stopsession`         | End the current session and display summary         |
+| `/createbet`           | Create a new session-based bet                      |
+| `/funbet`              | Create a bet using persistent balances              |
 | `/balance`             | Show your session and persistent balance            |
-| `/stats`               | View your current session stats                     |
-| `/laststats`           | View your stats from the last session               |
-| `/lifetimestats`       | View your all-time stats                            |
-| `/rankings`            | Leaderboard for the current session                 |
-| `/lifetimerankings`    | All-time leaderboard                                |
+| `/mywagers`            | View your current active wagers                     |
+| `/wager`               | Place a wager on an active bet                      |
 
 ---
 
@@ -49,14 +46,20 @@ A session-based **and standalone** Discord betting bot built with 🐍 Python + 
 2. Create a `.env` file:
    ```env
    DISCORD_BOT_TOKEN=your-token-here
+   DISCORD_APPLICATION_ID=your-application-id-here
    ```
 
 3. Install dependencies:
    ```bash
-   pip install nextcord python-dotenv
+   pip install nextcord python-dotenv aiosqlite
    ```
 
-4. Run the bot:
+4. Initialize the database:
+   ```bash
+   python init_db.py
+   ```
+
+5. Run the bot:
    ```bash
    python wagerbot.py
    ```
@@ -66,7 +69,7 @@ A session-based **and standalone** Discord betting bot built with 🐍 Python + 
 ## 🧠 Notes
 
 - Make sure the bot has **message**, **embed**, and **interaction** permissions
-- Persistent data is saved in `data.json`
+- Persistent data is saved in `wagerbot.db` SQLite database
 - Bets created outside of sessions use persistent balance
 - Fun bets allow ongoing, non-session wagering chaos
 

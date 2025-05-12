@@ -17,6 +17,8 @@ APPLICATION_ID = os.getenv("DISCORD_APPLICATION_ID")
 bot = commands.Bot(intents=intents, application_id=APPLICATION_ID)
 
 
+
+
 # Constants that need to be shared with init_db.py
 DB_FILE = "wagerbot.db"
 
@@ -415,7 +417,13 @@ class WalletTransferModal(Modal):
             )
             
             await interaction.response.send_message(
-                f"💰 Transferred {transfer_amount} credits from wallet to session. Wallet transfers will have special multipliers!", 
+                f"💰 Transferred {transfer_amount} credits from wallet to session.\n\n" +
+                "**MULTIPLIER CONFIRMED:** Your final balance in this session will receive special multipliers at session end:\n" +
+                "• 1st place: 2.5x bonus\n" + 
+                "• 2nd place: 2.2x bonus\n" + 
+                "• 3rd place: 2.0x bonus\n" + 
+                "• 4th place: 1.8x bonus\n" + 
+                "• Everyone else: 1.6x bonus", 
                 ephemeral=True
             )
         
@@ -442,6 +450,51 @@ class WalletTransferButton(Button):
     async def callback(self, interaction: nextcord.Interaction):
         modal = WalletTransferModal(self.session_id)
         await interaction.response.send_modal(modal)
+        
+        # Store the original message for later reference
+        self.message = interaction.message
+
+class TransferOrSkipView(View):
+    def __init__(self, session_id):
+        super().__init__(timeout=120)  # 2 minute timeout
+        self.session_id = session_id
+        self.add_item(WalletTransferButton(session_id))
+        self.add_item(SkipTransferButton())
+
+    async def on_timeout(self):
+        # When the view times out after 2 minutes, modify the message
+        try:
+            # Create a disabled view with buttons that can't be clicked
+            view = View()
+            view.add_item(Button(label="Transfer Wallet Balance", style=nextcord.ButtonStyle.primary, disabled=True))
+            view.add_item(Button(label="Skip (Selected by Default)", style=nextcord.ButtonStyle.secondary, disabled=True))
+            
+            # Find the original message to edit
+            for child in self.children:
+                if hasattr(child, 'message') and child.message:
+                    await child.message.edit(
+                        content="⏱️ Time's up! Using session bankroll only (no wallet transfer).",
+                        view=view
+                    )
+                    break
+        except Exception as e:
+            print(f"[ERROR] Failed to update message on timeout: {e}")
+
+class SkipTransferButton(Button):
+    def __init__(self):
+        super().__init__(
+            label="Skip (Use Session Bankroll Only)", 
+            style=nextcord.ButtonStyle.secondary
+        )
+
+    async def callback(self, interaction: nextcord.Interaction):
+        await interaction.response.send_message(
+            "✅ You've chosen to use the session bankroll only. No multipliers will be applied (1.0x) to your winnings at the end of the session.", 
+            ephemeral=True
+        )
+        
+        # Store the original message for later reference
+        self.message = interaction.message
 
 class CreateBetModal(Modal):
     def __init__(self):
@@ -932,7 +985,7 @@ async def startsession(interaction: nextcord.Interaction):
 
     if existing_session:
         await interaction.response.send_message(
-            f"⚠️ An active session (ID {existing_session[0]}) already exists. You must end it first with `/endsession`.",
+            f"⚠️ An active session (ID {existing_session[0]}) already exists. You must end it first with `/stopsession`.",
             ephemeral=True
         )
         return
@@ -963,31 +1016,29 @@ async def startsession(interaction: nextcord.Interaction):
     embed.add_field(
         name="💎 Wallet Transfer Bonus",
         value=(
-            "Transfer funds from your wallet to get **SPECIAL MULTIPLIERS** at session end:\n\n"
-            "**Regular Bankroll:**\n"
-            "No multipliers - you keep what you win\n\n"
-            "**Wallet Transfer:**\n"
+            "**Choose an option within 2 minutes:**\n\n"
+            "**Option 1: Transfer funds from your wallet to get SPECIAL MULTIPLIERS at session end:**\n"
             "1st place: 2.5x multiplier 💰\n"
             "2nd place: 2.2x multiplier 💰\n" 
             "3rd place: 2.0x multiplier 💰\n"
             "4th place: 1.8x multiplier 💰\n"
-            "Everyone else: 1.6x multiplier 💰"
+            "Everyone else: 1.6x multiplier 💰\n\n"
+            "**Option 2: Skip and use session bankroll only:**\n"
+            "No special multipliers - you keep what you win (1.0x)"
         ),
         inline=False
     )
     
-    embed.set_footer(text="Wallet transfers are high risk, high reward! Transfer to earn bonus multipliers.")
+    embed.set_footer(text="Wallet transfers are high risk, high reward! This prompt will auto-select 'Skip' after 2 minutes.")
 
-    # Create a view with a wallet transfer button
-    view = View(timeout=None)
-    view.add_item(WalletTransferButton(session_id))
+    # Create a view with a wallet transfer button AND a skip button
+    view = TransferOrSkipView(session_id)
 
     await interaction.response.send_message(
         embed=embed, 
         view=view, 
         ephemeral=False
     )
-
 
 @bot.slash_command(name="stopsession", description="End the current betting session")
 async def stopsession(interaction: nextcord.Interaction):
