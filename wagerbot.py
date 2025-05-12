@@ -893,6 +893,7 @@ class WinnerSelect(Select):
 # Slash commands
 
 @bot.slash_command(name="force_sync", description="Force sync application commands")
+@commands.has_permissions(administrator=True)  # Only admins can use this
 async def force_sync(interaction: nextcord.Interaction):
     try:
         # Acknowledge the interaction immediately to prevent timeout
@@ -1054,17 +1055,14 @@ async def mywagers(interaction: nextcord.Interaction):
 
 
 @bot.slash_command(name="createbet", description="Start creating a new bet")
-@commands.has_permissions(manage_guild=True)
 async def createbet(interaction: nextcord.Interaction):
     await interaction.response.send_modal(CreateBetModal())
 
 @bot.slash_command(name="funbet", description="Create a fun bet that uses wallet balance (works in or outside sessions)")
-@commands.has_permissions(manage_guild=True)
 async def funbet(interaction: nextcord.Interaction):
     await interaction.response.send_modal(CreateFunBetModal())
 
 @bot.slash_command(name="startsession", description="Start a new betting session")
-@commands.has_permissions(manage_guild=True)
 async def startsession(interaction: nextcord.Interaction):
     # Check if an active session already exists
     existing_session = await db_fetchone(
@@ -1131,7 +1129,6 @@ async def startsession(interaction: nextcord.Interaction):
     )
 
 @bot.slash_command(name="endsession", description="End the current betting session")
-@commands.has_permissions(manage_guild=True)
 async def endsession(interaction: nextcord.Interaction):
     session_row = await db_fetchone(
         "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
