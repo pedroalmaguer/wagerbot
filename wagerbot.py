@@ -11,7 +11,11 @@ from dotenv import load_dotenv
 intents = nextcord.Intents.default()
 intents.message_content = True
 intents.members = True
-bot = commands.Bot(intents=intents)
+
+APPLICATION_ID = os.getenv("DISCORD_APPLICATION_ID")
+
+bot = commands.Bot(intents=intents, application_id=APPLICATION_ID)
+
 
 # Constants that need to be shared with init_db.py
 DB_FILE = "wagerbot.db"
@@ -1330,31 +1334,67 @@ async def debug_commands(interaction: nextcord.Interaction):
 @bot.event
 async def on_ready():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now}] [🫼] Bot is online and ready.")
+    print(f"[{now}] [🔧] Initializing bot...")
 
     # Initialize database structure
     async with aiosqlite.connect(DB_FILE) as db:
-        # Your database initialization code here (keep this part)
-        await db.commit()
+        # Users table
+        await db.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_id TEXT,
+            username TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        ''')
 
-    # Clean up old deprecated commands
+        # Add your other table creation code here
+        # ...
+
+        await db.commit()
+    
+    print(f"[{now}] [💾] Database initialization complete")
+
+    # Clean up old deprecated commands - with proper Route import
     try:
         print(f"[{now}] [🧹] Cleaning up deprecated commands...")
-        remote_cmds = await bot.fetch_application_commands()
         
-        # List of commands to remove (deprecated commands)
-        deprecated_names = ["endsession", "finish_session", "stop_session", "simple_endsession"]
-        
-        for cmd in remote_cmds:
-            if cmd.name in deprecated_names:
-                print(f"[{now}] [🗑️] Removing deprecated command: /{cmd.name}")
-                try:
-                    await bot.http.delete_global_application_command(bot.application_id, cmd.id)
-                    print(f"[{now}] [✅] Successfully removed /{cmd.name}")
-                except Exception as del_err:
-                    print(f"[{now}] [❌] Failed to remove /{cmd.name}: {del_err}")
+        # Import Route properly
+        try:
+            from nextcord.http import Route
+            
+            # Attempt to get commands using direct HTTP request
+            app_id = bot.user.id
+            
+            commands_data = await bot.http.request(
+                Route('GET', '/applications/{app_id}/commands', app_id=app_id)
+            )
+            
+            # List of commands to remove (deprecated commands)
+            deprecated_names = ["endsession", "finish_session", "stop_session", "simple_endsession"]
+            
+            for cmd in commands_data:
+                if cmd.get('name') in deprecated_names:
+                    cmd_id = cmd.get('id')
+                    cmd_name = cmd.get('name')
+                    print(f"[{now}] [🗑️] Removing deprecated command: /{cmd_name}")
+                    try:
+                        await bot.http.request(
+                            Route('DELETE', '/applications/{app_id}/commands/{cmd_id}', 
+                                  app_id=app_id, cmd_id=cmd_id)
+                        )
+                        print(f"[{now}] [✅] Successfully removed /{cmd_name}")
+                    except Exception as del_err:
+                        print(f"[{now}] [❌] Failed to remove /{cmd_name}: {del_err}")
+        except ImportError:
+            print(f"[{now}] [⚠️] Could not import Route from nextcord.http")
+            print(f"[{now}] [ℹ️] This is not critical, continuing with sync...")
+        except Exception as fetch_err:
+            print(f"[{now}] [⚠️] Could not fetch commands for cleanup: {str(fetch_err)}")
+            print(f"[{now}] [ℹ️] This is not critical, continuing with sync...")
+            
     except Exception as e:
-        print(f"[{now}] [❌] Error during command cleanup: {e}")
+        print(f"[{now}] [❌] Error during command cleanup: {str(e)}")
 
     # Sync all commands
     try:
@@ -1364,14 +1404,10 @@ async def on_ready():
         cmds = bot.get_application_commands()
         print(f"[{now}] [✅] Synced {len(cmds)} commands: {', '.join(['/' + cmd.name for cmd in cmds])}")
     except Exception as e:
-        print(f"[{now}] [❌] Error syncing commands: {e}")
-        
-    # Show final registered commands
-    try:
-        remote_cmds = await bot.fetch_application_commands()
-        print(f"[{now}] [📋] Commands registered with Discord: {', '.join(['/' + cmd.name for cmd in remote_cmds])}")
-    except Exception as e:
-        print(f"[{now}] [❌] Error fetching commands: {e}")
+        print(f"[{now}] [❌] Error syncing commands: {str(e)}")
+    
+    # Now print the ready message at the end
+    print(f"[{now}] [🫼] Bot is online and ready!")
 
 # Run the bot
 bot.run(os.getenv("DISCORD_BOT_TOKEN"))
