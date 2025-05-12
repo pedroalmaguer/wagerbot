@@ -28,7 +28,7 @@ EMOJI_MAP = [
 ]
 
 
-cclass WagerButton(Button):
+class WagerButton(Button):
     def __init__(self, label: str, option_label: str, bet_id: int, use_wallet: bool = False):
         super().__init__(label=label, style=nextcord.ButtonStyle.primary)
         self.option_label = option_label
