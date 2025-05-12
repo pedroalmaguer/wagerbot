@@ -536,7 +536,7 @@ async def force_sync(interaction: nextcord.Interaction):
     await interaction.response.send_message("🔄 Commands synced.", ephemeral=True)
 
 
-@bot.slash_command(name="balance", description="Check your persistent and session balances")
+@bot.slash_command(name="balance", description="Check your Wallet and Bankrolln balances")
 async def balance(interaction: nextcord.Interaction):
     # 🔥 Get internal database user_id (not discord ID!)
     user_id = await ensure_user_exists(interaction.user)
@@ -557,14 +557,14 @@ async def balance(interaction: nextcord.Interaction):
     )
     session_balance = session_balance_row[0] if session_balance_row else 1000
 
-    # 🔵 Amount currently wagered from persistent wallet
+    # 🔵 Amount currently wagered from wallet
     persistent_wagered_row = await db_fetchone(
         "SELECT SUM(amount) FROM wagers WHERE user_id = ? AND session_id IS NULL AND result = 'pending'", 
         (user_id,)
     )
     persistent_wagered = persistent_wagered_row[0] if persistent_wagered_row and persistent_wagered_row[0] else 0
 
-    # 🔵 Amount currently wagered from session bankroll
+    # 🔵 Amount currently wagered from  bankroll
     session_wagered_row = await db_fetchone(
         "SELECT SUM(amount) FROM wagers WHERE user_id = ? AND session_id = ? AND result = 'pending'", 
         (user_id, session_id)
@@ -577,12 +577,12 @@ async def balance(interaction: nextcord.Interaction):
         color=nextcord.Color.green()
     )
     embed.add_field(
-        name="Persistent Balance",
+        name="Wallet Balance",
         value=f"Available: {persistent_balance}\nWagered: {persistent_wagered}",
         inline=False
     )
     embed.add_field(
-        name="Session Balance",
+        name="Bankroll Balance",
         value=f"Available: {session_balance}\nWagered: {session_wagered}",
         inline=False
     )
@@ -695,15 +695,57 @@ async def endsession(interaction: nextcord.Interaction):
     wager_count = total_wagers[0] or 0
     total_amount = total_wagers[1] or 0
 
-    top_users = await db_fetchall(
+    # 🔥 Top users by wagers
+    top_wagers = await db_fetchall(
         """
-        SELECT u.username, SUM(w.amount) as total_wagered
+        SELECT 
+            u.id as user_id,
+            u.username, 
+            SUM(w.amount) as total_wagered,
+            SUM(CASE WHEN w.result = 'win' THEN w.payout - w.amount ELSE -w.amount END) as net_result
         FROM wagers w
         JOIN users u ON w.user_id = u.id
         WHERE w.session_id = ? AND w.from_wallet = 0
         GROUP BY u.id
         ORDER BY total_wagered DESC
         LIMIT 5
+        """,
+        (session_id,)
+    )
+
+    # 🔥 Biggest Single Bet Win and Loss
+    biggest_win = await db_fetchone(
+        """
+        SELECT 
+            u.username, 
+            w.payout - w.amount as win_amount,
+            b.name as bet_name,
+            bo.label as option_label
+        FROM wagers w
+        JOIN users u ON w.user_id = u.id
+        JOIN bet b ON w.prop_id = b.id
+        JOIN bet_options bo ON w.prop_option_id = bo.id
+        WHERE w.session_id = ? AND w.result = 'win'
+        ORDER BY win_amount DESC
+        LIMIT 1
+        """,
+        (session_id,)
+    )
+
+    biggest_loss = await db_fetchone(
+        """
+        SELECT 
+            u.username, 
+            w.amount as loss_amount,
+            b.name as bet_name,
+            bo.label as option_label
+        FROM wagers w
+        JOIN users u ON w.user_id = u.id
+        JOIN bet b ON w.prop_id = b.id
+        JOIN bet_options bo ON w.prop_option_id = bo.id
+        WHERE w.session_id = ? AND w.result = 'lose'
+        ORDER BY loss_amount DESC
+        LIMIT 1
         """,
         (session_id,)
     )
@@ -724,20 +766,30 @@ async def endsession(interaction: nextcord.Interaction):
     stats_embed.add_field(name="Total Bets Placed (Bankroll Only)", value=wager_count, inline=True)
     stats_embed.add_field(name="Total Amount Wagered (Bankroll Only)", value=total_amount, inline=True)
 
-    if top_users:
-        leaderboard = "\n".join(
-            [f"**{idx+1}. {name}** ➔ {amt} wagered" for idx, (name, amt) in enumerate(top_users)]
-        )
-        stats_embed.add_field(name="Top Wagerers (Bankroll)", value=leaderboard, inline=False)
+    if top_wagers:
+        leaderboard = []
+        for idx, (_, name, total_wagered, net_result) in enumerate(top_wagers):
+            net_status = "🟢" if net_result > 0 else "🔴"
+            leaderboard.append(f"**{idx+1}. {name}**\n  💰 Wagered: {total_wagered} | {net_status} Net: {net_result}")
+        
+        stats_embed.add_field(name="Top Wagerers (Bankroll)", value="\n".join(leaderboard), inline=False)
     else:
         stats_embed.add_field(name="Top Wagerers", value="No wagers placed.", inline=False)
+
+    # Add Biggest Win and Loss
+    if biggest_win:
+        win_details = f"**{biggest_win[0]}** won {biggest_win[1]} credits\nBet: {biggest_win[2]}\nOption: {biggest_win[3]}"
+        stats_embed.add_field(name="🏆 Biggest Single Bet Win", value=win_details, inline=False)
+
+    if biggest_loss:
+        loss_details = f"**{biggest_loss[0]}** lost {biggest_loss[1]} credits\nBet: {biggest_loss[2]}\nOption: {biggest_loss[3]}"
+        stats_embed.add_field(name="😔 Biggest Single Bet Loss", value=loss_details, inline=False)
 
     stats_embed.set_footer(text=f"Session ID {session_id} • Only bankroll wagers are counted.")
 
     # 🔥 Send embeds
     await interaction.response.send_message(embed=rewards_embed, ephemeral=False)
     await interaction.followup.send(embed=stats_embed, ephemeral=False)
-
 
 
 @bot.slash_command(name="wager", description="Place a wager on an active bet")
