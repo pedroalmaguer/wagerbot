@@ -34,63 +34,141 @@ class WagerModal(Modal):
         self.option_label = option_label
         self.bet_id = bet_id
         self.use_wallet = use_wallet
-        self.amount = TextInput(label="Enter your wager amount", required=True)
+        self.amount = TextInput(
+            label="Enter your wager amount", 
+            placeholder="Amount to wager", 
+            required=True
+        )
         self.add_item(self.amount)
 
-async def callback(self, interaction: nextcord.Interaction):
-    try:
-        amount = int(self.amount.value)
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        await interaction.response.send_message("Invalid amount.", ephemeral=True)
-        return
+    async def callback(self, interaction: nextcord.Interaction):
+        try:
+            amount = int(self.amount.value)
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("Invalid amount. Please enter a positive number.", ephemeral=True)
+            return
 
-    user_id = interaction.user.id
+        # 🔥 Always resolve internal user ID safely
+        user_id = await ensure_user_exists(interaction.user)
+        print(f"[WAGER DEBUG] User: {interaction.user.display_name} (ID: {interaction.user.id}), Internal User ID: {user_id}")
 
-    if self.use_persistent_balance:
-        balance_row = await db_fetchone("SELECT balance FROM wallet WHERE user_id = ?", (user_id,))
-        user_balance = balance_row[0] if balance_row else 1000
-    else:
-        session_id = await get_active_session_id()
-        balance_row = await db_fetchone("SELECT balance FROM bankroll WHERE user_id = ? AND session_id = ?", (user_id, session_id))
-        user_balance = balance_row[0] if balance_row else 1000
-
-    if amount > user_balance:
-        await interaction.response.send_message("Insufficient funds.", ephemeral=True)
-        return
-
-    new_balance = user_balance - amount
-
-    # ✅ Update balance
-    if self.use_persistent_balance:
-        await db_execute(
-            "UPDATE wallet SET balance = ? WHERE user_id = ?",
-            (new_balance, user_id)
+        # 🔥 Find active session
+        session_row = await db_fetchone(
+            "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
         )
-    else:
-        await db_execute(
-            "UPDATE bankroll SET balance = ? WHERE user_id = ? AND session_id = ?",
-            (new_balance, user_id, session_id)
+        if not session_row:
+            print("[WAGER DEBUG] No active session found")
+            await interaction.response.send_message("⚠️ No active session.", ephemeral=True)
+            return
+        session_id = session_row[0]
+        print(f"[WAGER DEBUG] Active Session ID: {session_id}")
+
+        # 🔥 Check bet exists and is not resolved
+        bet_row = await db_fetchone(
+            "SELECT is_resolved FROM bet WHERE id = ?", (self.bet_id,)
         )
+        if not bet_row:
+            print(f"[WAGER DEBUG] Bet {self.bet_id} not found")
+            await interaction.response.send_message("⚠️ Bet not found.", ephemeral=True)
+            return
+        if bet_row[0]:  # Already resolved
+            print(f"[WAGER DEBUG] Bet {self.bet_id} already resolved")
+            await interaction.response.send_message("⚠️ This bet is already resolved.", ephemeral=True)
+            return
 
-    # ✅ Insert into wagers table
-    if self.use_persistent_balance:
-        wager_session_id = None
-    else:
-        wager_session_id = session_id
+        # 🔥 Find the option ID for this bet
+        option_row = await db_fetchone(
+            "SELECT id FROM bet_options WHERE prop_id = ? AND label = ?",
+            (self.bet_id, self.option_label)
+        )
+        if not option_row:
+            print(f"[WAGER DEBUG] Option {self.option_label} not found for bet {self.bet_id}")
+            await interaction.response.send_message("⚠️ That option does not exist for this bet.", ephemeral=True)
+            return
+        option_id = option_row[0]
+        print(f"[WAGER DEBUG] Option ID: {option_id}")
 
-    await db_execute(
-        "INSERT INTO wagers (user_id, session_id, prop_id, prop_option_id, amount, odds, result, payout) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (user_id, wager_session_id, self.message_id, None, amount, 100, "pending", 0)
-    )
+        # 🔥 Check balance
+        try:
+            if self.use_wallet:
+                # Ensure wallet entry exists
+                wallet_row = await db_fetchone(
+                    "SELECT balance FROM wallet WHERE user_id = ?", 
+                    (user_id,)
+                )
+                if not wallet_row:
+                    print(f"[WAGER DEBUG] Creating wallet for {interaction.user.display_name}")
+                    await db_execute(
+                        "INSERT INTO wallet (user_id, balance) VALUES (?, ?)", 
+                        (user_id, 1000)
+                    )
+                    balance = 1000
+                else:
+                    balance = wallet_row[0]
+                balance_source = "wallet"
+                print(f"[WAGER DEBUG] Wallet Balance for {interaction.user.display_name}: {balance}")
+            else:
+                # Ensure bankroll entry exists for this session
+                bankroll_row = await db_fetchone(
+                    "SELECT balance FROM bankroll WHERE user_id = ? AND session_id = ?", 
+                    (user_id, session_id)
+                )
+                if not bankroll_row:
+                    # Create a new bankroll entry with default 1000 if it doesn't exist
+                    print(f"[WAGER DEBUG] Creating bankroll for {interaction.user.display_name} in session {session_id}")
+                    await db_execute(
+                        "INSERT INTO bankroll (user_id, session_id, balance) VALUES (?, ?, ?)", 
+                        (user_id, session_id, 1000)
+                    )
+                    balance = 1000
+                else:
+                    balance = bankroll_row[0]
+                balance_source = "bankroll"
+                print(f"[WAGER DEBUG] Bankroll Balance for {interaction.user.display_name} in session {session_id}: {balance}")
 
-    # ✅ Success message
-    await interaction.response.send_message(
-        f"Wagered {amount} on {self.option_label}. Remaining balance: {new_balance}",
-        ephemeral=True
-    )
+            if amount > balance:
+                print(f"[WAGER DEBUG] Insufficient {balance_source} balance for {interaction.user.display_name}. Have {balance}, tried to wager {amount}")
+                await interaction.response.send_message(
+                    f"⚠️ Insufficient {balance_source} balance. You have {balance}.", 
+                    ephemeral=True
+                )
+                return
 
+            # 🔥 Deduct amount
+            if self.use_wallet:
+                await db_execute(
+                    "UPDATE wallet SET balance = balance - ? WHERE user_id = ?",
+                    (amount, user_id)
+                )
+                print(f"[WAGER DEBUG] Deducted {amount} from wallet for {interaction.user.display_name}")
+            else:
+                await db_execute(
+                    "UPDATE bankroll SET balance = balance - ? WHERE user_id = ? AND session_id = ?",
+                    (amount, user_id, session_id)
+                )
+                print(f"[WAGER DEBUG] Deducted {amount} from bankroll for {interaction.user.display_name} in session {session_id}")
+
+            # 🔥 Insert the wager
+            await db_execute(
+                """
+                INSERT INTO wagers 
+                (user_id, session_id, prop_id, prop_option_id, amount, odds, result, payout, from_wallet)
+                VALUES (?, ?, ?, ?, ?, 100, 'pending', 0, ?)
+                """,
+                (user_id, session_id, self.bet_id, option_id, amount, int(self.use_wallet))
+            )
+            print(f"[WAGER DEBUG] Wager inserted for {interaction.user.display_name}")
+
+            await interaction.response.send_message(
+                f"🎯 Successfully wagered {amount} credits from your **{balance_source}** on '{self.option_label}'.",
+                ephemeral=True
+            )
+
+        except Exception as e:
+            print(f"[WAGER DEBUG] Error during wager for {interaction.user.display_name}: {e}")
+            await interaction.response.send_message("An unexpected error occurred while placing your wager.", ephemeral=True)
 
 
 class WagerButton(Button):
@@ -101,7 +179,12 @@ class WagerButton(Button):
         self.use_wallet = use_wallet
 
     async def callback(self, interaction: nextcord.Interaction):
-        await interaction.response.send_modal(WagerModal(self.option_label, self.bet_id, self.use_wallet))
+        # 🔥 Debugging prints
+        print(f"[WAGER BUTTON DEBUG] {interaction.user.display_name} pressed button - Option: {self.option_label}, Bet ID: {self.bet_id}")
+        
+        # Open the modal for wagering
+        modal = WagerModal(self.option_label, self.bet_id, self.use_wallet)
+        await interaction.response.send_modal(modal)
 
 
 class CreateBetModal(Modal):
@@ -321,17 +404,35 @@ async def resolve_bet_and_payout(interaction: nextcord.Interaction, bet_id: int,
     # Mark the winning option
     await db_execute("UPDATE bet_options SET is_winner = 1 WHERE id = ?", (winning_option_id,))
 
-    # Find all wagers
+    # Find all wagers for this bet
     wagers = await db_fetchall(
         "SELECT user_id, amount, prop_option_id FROM wagers WHERE prop_id = ?",
         (bet_id,)
     )
 
+    # Fetch bet details for context
+    bet_details = await db_fetchone(
+        "SELECT name FROM bet WHERE id = ?",
+        (bet_id,)
+    )
+    bet_name = bet_details[0] if bet_details else "Unnamed Bet"
+
+    # Fetch winning option label
+    winning_option = await db_fetchone(
+        "SELECT label FROM bet_options WHERE id = ?",
+        (winning_option_id,)
+    )
+    winning_label = winning_option[0] if winning_option else "Unknown Option"
+
     result_lines = []
+    # Track guild to get member objects for sending messages
+    guild = interaction.guild
 
     for user_id, amount, prop_option_id in wagers:
         won = prop_option_id == winning_option_id
+        
         if won:
+            # Calculate payout (simple 2x for now)
             odds_row = await db_fetchone(
                 "SELECT odds FROM bet_options WHERE id = ?",
                 (prop_option_id,)
@@ -352,22 +453,54 @@ async def resolve_bet_and_payout(interaction: nextcord.Interaction, bet_id: int,
                 (payout, user_id, bet_id)
             )
 
-            user_obj = interaction.guild.get_member(user_id)
-            username = user_obj.display_name if user_obj else f"User {user_id}"
-            result_lines.append(f"🎉 **{username}** won {payout} credits!")
+            # Try to get the user to send a personal message
+            try:
+                member = guild.get_member(int(user_id))
+                if member:
+                    # Send an ephemeral-style personal message about the win
+                    await member.send(
+                        f"🎉 **Congratulations!**\n"
+                        f"You won the bet: **{bet_name}**\n"
+                        f"Winning Option: {winning_label}\n"
+                        f"Bet Amount: {amount}\n"
+                        f"Payout: {payout} credits\n"
+                        f"Net Gain: +{payout - amount} credits"
+                    )
+                result_lines.append(f"🎉 **{member.display_name}** won {payout} credits!")
+            except:
+                # Fallback if DM fails
+                result_lines.append(f"🎉 User {user_id} won {payout} credits!")
 
         else:
+            # Update losing wager
             await db_execute(
                 "UPDATE wagers SET result = 'lose' WHERE user_id = ? AND prop_id = ?",
                 (user_id, bet_id)
             )
 
-    # Final embed with results
+            # Try to send loss message
+            try:
+                member = guild.get_member(int(user_id))
+                if member:
+                    # Send an ephemeral-style personal message about the loss
+                    await member.send(
+                        f"😔 **Better luck next time!**\n"
+                        f"You lost the bet: **{bet_name}**\n"
+                        f"Winning Option: {winning_label}\n"
+                        f"Bet Amount: {amount}\n"
+                        f"Net Loss: -{amount} credits"
+                    )
+            except:
+                pass  # Silently fail if DM can't be sent
+
+    # Final embed with overall results
     embed = nextcord.Embed(
         title="🏁 Bet Resolved!",
-        description="\n".join(result_lines) if result_lines else "No winners this time!",
+        description="\n".join(result_lines) if result_lines else "No participants this time!",
         color=nextcord.Color.green()
     )
+    embed.add_field(name="Bet", value=bet_name, inline=False)
+    embed.add_field(name="Winning Option", value=winning_label, inline=False)
     await interaction.channel.send(embed=embed)
 
 # Ensures a user exists in the database. 
