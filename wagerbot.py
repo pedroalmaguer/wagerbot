@@ -4,9 +4,8 @@ import aiosqlite
 import nextcord
 from nextcord.ext import commands
 from nextcord.ui import View, Button, Modal, TextInput, Select
-from datetime import datetime
-from dotenv import load_dotenv
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 
 # Intents and bot setup
 intents = nextcord.Intents.default()
@@ -14,6 +13,7 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(intents=intents)
 
+# Constants that need to be shared with init_db.py
 DB_FILE = "wagerbot.db"
 
 # Load .env
@@ -488,6 +488,85 @@ class WinnerSelect(Select):
         # Confirm to the admin
         await interaction.response.send_message(f"🏆 Bet '{bet_name}' resolved. Winning option: {winning_label}", ephemeral=True)
 
+class CreateFunBetModal(Modal):
+    def __init__(self):
+        super().__init__(title="Create a Fun Bet (Uses Wallet)")
+
+        self.bet_question = TextInput(
+            label="Bet Question",
+            placeholder="E.g., 'Will it rain tomorrow?'",
+            required=True,
+            max_length=200
+        )
+        self.bet_options = TextInput(
+            label="Options (one per line, max 8)",
+            placeholder="Option 1\nOption 2\nOption 3...",
+            required=True,
+            style=nextcord.TextInputStyle.paragraph,
+            max_length=800
+        )
+
+        self.add_item(self.bet_question)
+        self.add_item(self.bet_options)
+
+    async def callback(self, interaction: nextcord.Interaction):
+        options = [opt.strip() for opt in self.bet_options.value.split("\n") if opt.strip()]
+        
+        if len(options) < 2:
+            await interaction.response.send_message("⚠️ You must provide at least 2 options.", ephemeral=True)
+            return
+        if len(options) > 8:
+            await interaction.response.send_message("⚠️ You can provide at most 8 options.", ephemeral=True)
+            return
+
+        # Get active session (if any)
+        session_row = await db_fetchone(
+            "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+        )
+        session_id = session_row[0] if session_row else None
+
+        # Insert the bet
+        await db_execute(
+            "INSERT INTO bet (session_id, name, description, bet_type, is_resolved) VALUES (?, ?, ?, ?, 0)",
+            (session_id, self.bet_question.value, "Fun bet (wallet only)", "funbet")
+        )
+
+        bet_row = await db_fetchone("SELECT id FROM bet WHERE name = ? ORDER BY id DESC LIMIT 1", (self.bet_question.value,))
+        bet_id = bet_row[0]
+
+        for label in options:
+            await db_execute(
+                "INSERT INTO bet_options (prop_id, label, odds) VALUES (?, ?, 100)",
+                (bet_id, label)
+            )
+
+        description = f"**💰 WALLET BET: {self.bet_question.value}**\n"
+        for idx, label in enumerate(options):
+            description += f"{EMOJI_MAP[idx]} {label}\n"
+
+        embed = nextcord.Embed(
+            title="🎯 Fun Bet Created! (Uses Wallet)",
+            description=description,
+            color=nextcord.Color.gold()
+        )
+        
+        embed.set_footer(text="This bet uses your wallet balance only (not session bankroll)")
+
+        # Create buttons view for wallet betting
+        view = View(timeout=None)
+
+        # Add wallet wager buttons
+        for idx, label in enumerate(options):
+            emoji = EMOJI_MAP[idx]
+            view.add_item(WagerButton(label=f"💰 {emoji} {label}", option_label=label, bet_id=bet_id, use_wallet=True))
+
+        # Add admin control buttons
+        view.add_item(ResolveBetButton(bet_id))
+        view.add_item(LockBetButton(bet_id))
+        view.add_item(CancelBetButton(bet_id))
+
+        await interaction.response.send_message(embed=embed, view=view)
+
 # Database helper functions
 
 async def db_execute(query, params=()):
@@ -758,6 +837,11 @@ async def mywagers(interaction: nextcord.Interaction):
 async def createbet(interaction: nextcord.Interaction):
     await interaction.response.send_modal(CreateBetModal())
 
+@bot.slash_command(name="funbet", description="Create a fun bet that uses wallet balance (works in or outside sessions)")
+@commands.has_permissions(manage_guild=True)
+async def funbet(interaction: nextcord.Interaction):
+    await interaction.response.send_modal(CreateFunBetModal())
+
 @bot.slash_command(name="startsession", description="Start a new betting session")
 @commands.has_permissions(manage_guild=True)
 async def startsession(interaction: nextcord.Interaction):
@@ -799,7 +883,6 @@ async def startsession(interaction: nextcord.Interaction):
         ephemeral=False
     )
 
-
 class WinnerSelect(Select):
     def __init__(self, bet_id, options):
         self.bet_id = bet_id
@@ -811,10 +894,14 @@ class WinnerSelect(Select):
 
         # Fetch bet details
         bet_details = await db_fetchone(
-            "SELECT name FROM bet WHERE id = ?", 
+            "SELECT name, bet_type FROM bet WHERE id = ?", 
             (self.bet_id,)
         )
         bet_name = bet_details[0] if bet_details else "Unnamed Bet"
+        bet_type = bet_details[1] if bet_details else "moneyline"
+        
+        # Check if this is a fun bet (wallet only)
+        is_fun_bet = bet_type == "funbet"
 
         # Fetch winning option label
         winning_option = await db_fetchone(
@@ -833,10 +920,12 @@ class WinnerSelect(Select):
 
         # Update wagers: mark win/loss
         winning_wagers = await db_fetchall(
-            "SELECT id, user_id, amount FROM wagers WHERE prop_id = ? AND prop_option_id = ?", (self.bet_id, winning_option_id)
+            "SELECT id, user_id, amount, from_wallet FROM wagers WHERE prop_id = ? AND prop_option_id = ?", 
+            (self.bet_id, winning_option_id)
         )
         losing_wagers = await db_fetchall(
-            "SELECT id, user_id, amount FROM wagers WHERE prop_id = ? AND prop_option_id != ?", (self.bet_id, winning_option_id)
+            "SELECT id, user_id, amount, from_wallet FROM wagers WHERE prop_id = ? AND prop_option_id != ?", 
+            (self.bet_id, winning_option_id)
         )
 
         # Prepare tracking for payout summary
@@ -844,35 +933,49 @@ class WinnerSelect(Select):
         payout_details = []
 
         # Pay out winnings 
-        for wager_id, user_id, amount in winning_wagers:
+        for wager_id, user_id, amount, from_wallet in winning_wagers:
             # Calculate payout (simple 2x for now)
             payout = amount * 2
             await db_execute("UPDATE wagers SET result = 'win', payout = ? WHERE id = ?", (payout, wager_id))
             
             # Update the user's balance
-            await db_execute(
-                "UPDATE bankroll SET balance = balance + ? WHERE user_id = ? AND session_id = ?",
-                (payout, user_id, session_id)
-            )
+            if is_fun_bet or from_wallet:
+                # Fun bets always update wallet
+                await db_execute(
+                    "UPDATE wallet SET balance = balance + ? WHERE user_id = ?",
+                    (payout, user_id)
+                )
+            else:
+                # Regular bets update bankroll
+                await db_execute(
+                    "UPDATE bankroll SET balance = balance + ? WHERE user_id = ? AND session_id = ?",
+                    (payout, user_id, session_id)
+                )
 
             # Track for summary
             user_details = await db_fetchone("SELECT username FROM users WHERE id = ?", (user_id,))
             username = user_details[0] if user_details else f"User {user_id}"
-            payout_details.append(f"🎉 **{username}** won {payout} credits")
+            
+            # Indicate if wallet bet
+            wallet_indicator = "💰 " if is_fun_bet or from_wallet else ""
+            payout_details.append(f"{wallet_indicator}🎉 **{username}** won {payout} credits")
 
-        for wager_id, user_id, amount in losing_wagers:
+        for wager_id, user_id, amount, from_wallet in losing_wagers:
             await db_execute("UPDATE wagers SET result = 'lose', payout = 0 WHERE id = ?", (wager_id,))
             
             # Track for summary
             user_details = await db_fetchone("SELECT username FROM users WHERE id = ?", (user_id,))
             username = user_details[0] if user_details else f"User {user_id}"
-            payout_details.append(f"😔 **{username}** lost {amount} credits")
+            
+            # Indicate if wallet bet
+            wallet_indicator = "💰 " if is_fun_bet or from_wallet else ""
+            payout_details.append(f"{wallet_indicator}😔 **{username}** lost {amount} credits")
 
         # Create an embed to show bet resolution
         embed = nextcord.Embed(
-            title="🏆 Bet Resolved",
+            title="🏆 Bet Resolved" if not is_fun_bet else "💰 Fun Bet Resolved",
             description=f"**Bet:** {bet_name}\n**Winning Option:** {winning_label}",
-            color=nextcord.Color.green()
+            color=nextcord.Color.green() if not is_fun_bet else nextcord.Color.gold()
         )
 
         # Add payout details
@@ -881,7 +984,11 @@ class WinnerSelect(Select):
             if len(payout_details) > 10:
                 payout_summary += f"\n... and {len(payout_details) - 10} more"
             embed.add_field(name="Payout Details", value=payout_summary, inline=False)
-
+        
+        # Add footer based on bet type
+        if is_fun_bet:
+            embed.set_footer(text="Fun Bet: All payouts went directly to wallet balances")
+        
         # Send the summary
         await interaction.channel.send(embed=embed)
 
@@ -1019,6 +1126,8 @@ async def wager(
 async def on_ready():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🫼] Bot is online and ready.")
+
+    
 
     # Initialize database structure
     async with aiosqlite.connect(DB_FILE) as db:
