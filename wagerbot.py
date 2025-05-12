@@ -304,21 +304,6 @@ class LockBetButton(Button):
         await db_execute("UPDATE bet SET is_resolved = 1 WHERE id = ?", (self.bet_id,))
         await interaction.response.send_message("✅ Bet has been locked (no more wagers).", ephemeral=True)
 
-class ResolveBetButton(Button):
-    def __init__(self, bet_id: int):
-        super().__init__(label="🏁 Resolve Bet", style=nextcord.ButtonStyle.primary)
-        self.bet_id = bet_id
-
-    async def callback(self, interaction: nextcord.Interaction):
-        options = await db_fetchall(
-            "SELECT id, label FROM bet_options WHERE prop_id = ?", (self.bet_id,)
-        )
-        if not options:
-            await interaction.response.send_message("No options found for this bet.", ephemeral=True)
-            return
-
-        view = ResolveBetView(self.bet_id, options)
-        await interaction.response.send_message("Select the winning option:", view=view, ephemeral=True)
 
 class CancelBetButton(Button):
     def __init__(self, bet_id: int):
@@ -536,7 +521,7 @@ async def force_sync(interaction: nextcord.Interaction):
     await interaction.response.send_message("🔄 Commands synced.", ephemeral=True)
 
 
-@bot.slash_command(name="balance", description="Check your Wallet and Bankrolln balances")
+@bot.slash_command(name="balance", description="Check your Wallet and Bankroll balances")
 async def balance(interaction: nextcord.Interaction):
     # 🔥 Get internal database user_id (not discord ID!)
     user_id = await ensure_user_exists(interaction.user)
@@ -589,23 +574,30 @@ async def balance(interaction: nextcord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
 @bot.slash_command(name="mywagers", description="View your current active wagers")
 async def mywagers(interaction: nextcord.Interaction):
-    user_id = interaction.user.id
+    # 🔥 Get internal database user ID safely
+    user_id = await ensure_user_exists(interaction.user)
 
-    wagers = await db_fetchall("SELECT prop_id, prop_option_id, amount FROM wagers WHERE user_id = ? AND result = 'pending'", (user_id,))
+    # 🔥 Fetch wagers
+    wagers = await db_fetchall(
+        "SELECT prop_id, prop_option_id, amount FROM wagers WHERE user_id = ? AND result = 'pending'", 
+        (user_id,)
+    )
 
     if not wagers:
         await interaction.response.send_message("You have no active wagers.", ephemeral=True)
         return
 
     description = ""
-    for wager in wagers:
-        bet_id, option_id, amount = wager
-        description += f"Bet ID {bet_id} | Option ID {option_id} | Amount: {amount}\n"
+    for bet_id, option_id, amount in wagers:
+        description += f"📌 Bet ID: `{bet_id}` | Option ID: `{option_id}` | Amount: `{amount}`\n"
 
-    embed = nextcord.Embed(title=f"🎲 {interaction.user.display_name}'s Active Wagers", description=description, color=nextcord.Color.blurple())
+    embed = nextcord.Embed(
+        title=f"🎲 {interaction.user.display_name}'s Active Wagers",
+        description=description,
+        color=nextcord.Color.blurple()
+    )
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
