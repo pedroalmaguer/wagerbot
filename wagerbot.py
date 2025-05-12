@@ -864,8 +864,64 @@ class WinnerSelect(Select):
 
 @bot.slash_command(name="force_sync", description="Force sync application commands")
 async def force_sync(interaction: nextcord.Interaction):
-    await bot.sync_application_commands()
-    await interaction.response.send_message("🔄 Commands synced.", ephemeral=True)
+    try:
+        # Acknowledge the interaction immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True)
+        
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🔄] Starting command sync requested by {interaction.user.display_name}...")
+        
+        # Try syncing commands
+        try:
+            await bot.sync_application_commands()
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [✅] Commands synced successfully!")
+            
+            # Get list of registered commands
+            cmds = bot.get_application_commands()
+            cmd_list = ", ".join([f"/{cmd.name}" for cmd in cmds])
+            
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [📋] Registered commands: {cmd_list}")
+            
+            # Respond with success
+            await interaction.followup.send(
+                f"🔄 Commands synced successfully! Registered {len(cmds)} commands:\n{cmd_list}", 
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            error_msg = f"Error syncing commands: {str(e)}"
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [❌] {error_msg}")
+            await interaction.followup.send(f"⚠️ {error_msg}", ephemeral=True)
+    
+    except nextcord.errors.NotFound as e:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [❌] Interaction timed out: {str(e)}")
+        print("Commands may still have been synced. Check with Discord.")
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [❌] Unexpected error in force_sync: {str(e)}")
+
+# Also add an automatic sync on startup
+@bot.event
+async def on_ready():
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{now}] [🫼] Bot is online and ready.")
+    
+    # Import and run database initialization if needed
+    try:
+        from init_db import init_database
+        await init_database()
+    except Exception as e:
+        print(f"[{now}] [❌] Error initializing database: {e}")
+        print("Continuing with existing database...")
+
+    # Automatically sync commands on startup
+    try:
+        print(f"[{now}] [🔄] Syncing commands on startup...")
+        await bot.sync_application_commands()
+        cmds = bot.get_application_commands()
+        cmd_list = ", ".join([f"/{cmd.name}" for cmd in cmds])
+        print(f"[{now}] [✅] Synced {len(cmds)} commands: {cmd_list}")
+    except Exception as e:
+        print(f"[{now}] [❌] Error syncing commands on startup: {e}")
+        print("You may need to use /force_sync manually.")
 
 
 @bot.slash_command(name="balance", description="Check your Wallet and Bankroll balances")
