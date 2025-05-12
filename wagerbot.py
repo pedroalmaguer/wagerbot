@@ -747,7 +747,117 @@ async def ensure_user_exists(discord_user: nextcord.User):
     )
     return new_user_row[0]
 
+class WinnerSelect(Select):
+    def __init__(self, bet_id, options):
+        self.bet_id = bet_id
+        select_options = [nextcord.SelectOption(label=opt[1], value=str(opt[0])) for opt in options]
+        super().__init__(placeholder="Select the winning option", min_values=1, max_values=1, options=select_options)
 
+    async def callback(self, interaction: nextcord.Interaction):
+        winning_option_id = int(self.values[0])
+
+        # Fetch bet details
+        bet_details = await db_fetchone(
+            "SELECT name, bet_type FROM bet WHERE id = ?", 
+            (self.bet_id,)
+        )
+        bet_name = bet_details[0] if bet_details else "Unnamed Bet"
+        bet_type = bet_details[1] if bet_details else "moneyline"
+        
+        # Check if this is a fun bet (wallet only)
+        is_fun_bet = bet_type == "funbet"
+
+        # Fetch winning option label
+        winning_option = await db_fetchone(
+            "SELECT label FROM bet_options WHERE id = ?", 
+            (winning_option_id,)
+        )
+        winning_label = winning_option[0] if winning_option else "Unknown Option"
+
+        # Update database: mark winner
+        await db_execute(
+            "UPDATE bet_options SET is_winner = 1 WHERE id = ?", (winning_option_id,)
+        )
+        await db_execute(
+            "UPDATE bet SET is_resolved = 1 WHERE id = ?", (self.bet_id,)
+        )
+
+        # Update wagers: mark win/loss
+        winning_wagers = await db_fetchall(
+            "SELECT id, user_id, amount, from_wallet FROM wagers WHERE prop_id = ? AND prop_option_id = ?", 
+            (self.bet_id, winning_option_id)
+        )
+        losing_wagers = await db_fetchall(
+            "SELECT id, user_id, amount, from_wallet FROM wagers WHERE prop_id = ? AND prop_option_id != ?", 
+            (self.bet_id, winning_option_id)
+        )
+
+        # Prepare tracking for payout summary
+        session_id = await get_active_session_id()
+        payout_details = []
+
+        # Pay out winnings 
+        for wager_id, user_id, amount, from_wallet in winning_wagers:
+            # Calculate payout (simple 2x for now)
+            payout = amount * 2
+            await db_execute("UPDATE wagers SET result = 'win', payout = ? WHERE id = ?", (payout, wager_id))
+            
+            # Update the user's balance
+            if is_fun_bet or from_wallet:
+                # Fun bets always update wallet
+                await db_execute(
+                    "UPDATE wallet SET balance = balance + ? WHERE user_id = ?",
+                    (payout, user_id)
+                )
+            else:
+                # Regular bets update bankroll
+                await db_execute(
+                    "UPDATE bankroll SET balance = balance + ? WHERE user_id = ? AND session_id = ?",
+                    (payout, user_id, session_id)
+                )
+
+            # Track for summary
+            user_details = await db_fetchone("SELECT username FROM users WHERE id = ?", (user_id,))
+            username = user_details[0] if user_details else f"User {user_id}"
+            
+            # Indicate if wallet bet
+            wallet_indicator = "💰 " if is_fun_bet or from_wallet else ""
+            payout_details.append(f"{wallet_indicator}🎉 **{username}** won {payout} credits")
+
+        for wager_id, user_id, amount, from_wallet in losing_wagers:
+            await db_execute("UPDATE wagers SET result = 'lose', payout = 0 WHERE id = ?", (wager_id,))
+            
+            # Track for summary
+            user_details = await db_fetchone("SELECT username FROM users WHERE id = ?", (user_id,))
+            username = user_details[0] if user_details else f"User {user_id}"
+            
+            # Indicate if wallet bet
+            wallet_indicator = "💰 " if is_fun_bet or from_wallet else ""
+            payout_details.append(f"{wallet_indicator}😔 **{username}** lost {amount} credits")
+
+        # Create an embed to show bet resolution
+        embed = nextcord.Embed(
+            title="🏆 Bet Resolved" if not is_fun_bet else "💰 Fun Bet Resolved",
+            description=f"**Bet:** {bet_name}\n**Winning Option:** {winning_label}",
+            color=nextcord.Color.green() if not is_fun_bet else nextcord.Color.gold()
+        )
+
+        # Add payout details
+        if payout_details:
+            payout_summary = "\n".join(payout_details[:10])  # Limit to 10 entries
+            if len(payout_details) > 10:
+                payout_summary += f"\n... and {len(payout_details) - 10} more"
+            embed.add_field(name="Payout Details", value=payout_summary, inline=False)
+        
+        # Add footer based on bet type
+        if is_fun_bet:
+            embed.set_footer(text="Fun Bet: All payouts went directly to wallet balances")
+        
+        # Send the summary
+        await interaction.channel.send(embed=embed)
+
+        # Confirm to the admin
+        await interaction.response.send_message(f"🏆 Bet '{bet_name}' resolved. Winning option: {winning_label}", ephemeral=True)
 
 
 # Slash commands
@@ -898,127 +1008,210 @@ async def startsession(interaction: nextcord.Interaction):
 
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🟢] Started a new session.")
 
+    # Create a detailed embed with multiplier info
+    embed = nextcord.Embed(
+        title="🟢 A New Betting Session Has Started!",
+        description="Everyone starts with 1000 credits in their session bankroll.",
+        color=nextcord.Color.green()
+    )
+    
+    # Add wallet transfer section with multiplier info
+    embed.add_field(
+        name="💎 Wallet Transfer Bonus",
+        value=(
+            "Transfer funds from your wallet to get **SPECIAL MULTIPLIERS** at session end:\n\n"
+            "**Regular Bankroll:**\n"
+            "No multipliers - you keep what you win\n\n"
+            "**Wallet Transfer:**\n"
+            "1st place: 2.5x multiplier 💰\n"
+            "2nd place: 2.2x multiplier 💰\n" 
+            "3rd place: 2.0x multiplier 💰\n"
+            "4th place: 1.8x multiplier 💰\n"
+            "Everyone else: 1.6x multiplier 💰"
+        ),
+        inline=False
+    )
+    
+    embed.set_footer(text="Wallet transfers are high risk, high reward! Transfer to earn bonus multipliers.")
+
     # Create a view with a wallet transfer button
     view = View(timeout=None)
     view.add_item(WalletTransferButton(session_id))
 
     await interaction.response.send_message(
-        "🟢 A new betting session has been started! Would you like to transfer credits from your wallet?", 
+        embed=embed, 
         view=view, 
         ephemeral=False
     )
 
-class WinnerSelect(Select):
-    def __init__(self, bet_id, options):
-        self.bet_id = bet_id
-        select_options = [nextcord.SelectOption(label=opt[1], value=str(opt[0])) for opt in options]
-        super().__init__(placeholder="Select the winning option", min_values=1, max_values=1, options=select_options)
+@bot.slash_command(name="endsession", description="End the current betting session")
+@commands.has_permissions(manage_guild=True)
+async def endsession(interaction: nextcord.Interaction):
+    session_row = await db_fetchone(
+        "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+    )
+    if not session_row:
+        await interaction.response.send_message("⚠️ No active session to end.", ephemeral=True)
+        return
 
-    async def callback(self, interaction: nextcord.Interaction):
-        winning_option_id = int(self.values[0])
+    session_id = session_row[0]
 
-        # Fetch bet details
-        bet_details = await db_fetchone(
-            "SELECT name, bet_type FROM bet WHERE id = ?", 
-            (self.bet_id,)
-        )
-        bet_name = bet_details[0] if bet_details else "Unnamed Bet"
-        bet_type = bet_details[1] if bet_details else "moneyline"
-        
-        # Check if this is a fun bet (wallet only)
-        is_fun_bet = bet_type == "funbet"
+    # 🔥 End the session
+    await db_execute("UPDATE sessions SET is_active = 0 WHERE id = ?", (session_id,))
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🔴] Ended session ID {session_id}.")
 
-        # Fetch winning option label
-        winning_option = await db_fetchone(
-            "SELECT label FROM bet_options WHERE id = ?", 
-            (winning_option_id,)
-        )
-        winning_label = winning_option[0] if winning_option else "Unknown Option"
+    # 🔥 Get all users with bankrolls
+    users = await db_fetchall(
+        "SELECT user_id, balance, from_wallet FROM bankroll WHERE session_id = ? ORDER BY balance DESC",
+        (session_id,)
+    )
 
-        # Update database: mark winner
-        await db_execute(
-            "UPDATE bet_options SET is_winner = 1 WHERE id = ?", (winning_option_id,)
-        )
-        await db_execute(
-            "UPDATE bet SET is_resolved = 1 WHERE id = ?", (self.bet_id,)
-        )
+    payouts = []
+    if users:
+        # Multipliers only for wallet transfers
+        wallet_multipliers = [2.5, 2.2, 2.0, 1.8]  # Wallet transfer top 1-4
+        default_wallet_multiplier = 1.6
 
-        # Update wagers: mark win/loss
-        winning_wagers = await db_fetchall(
-            "SELECT id, user_id, amount, from_wallet FROM wagers WHERE prop_id = ? AND prop_option_id = ?", 
-            (self.bet_id, winning_option_id)
-        )
-        losing_wagers = await db_fetchall(
-            "SELECT id, user_id, amount, from_wallet FROM wagers WHERE prop_id = ? AND prop_option_id != ?", 
-            (self.bet_id, winning_option_id)
-        )
+        for idx, (user_id, balance, from_wallet) in enumerate(users):
+            if balance <= 0:
+                continue  # Skip broke users
 
-        # Prepare tracking for payout summary
-        session_id = await get_active_session_id()
-        payout_details = []
-
-        # Pay out winnings 
-        for wager_id, user_id, amount, from_wallet in winning_wagers:
-            # Calculate payout (simple 2x for now)
-            payout = amount * 2
-            await db_execute("UPDATE wagers SET result = 'win', payout = ? WHERE id = ?", (payout, wager_id))
-            
-            # Update the user's balance
-            if is_fun_bet or from_wallet:
-                # Fun bets always update wallet
-                await db_execute(
-                    "UPDATE wallet SET balance = balance + ? WHERE user_id = ?",
-                    (payout, user_id)
-                )
+            # Apply multiplier only for wallet users
+            if from_wallet:
+                multiplier = wallet_multipliers[idx] if idx < len(wallet_multipliers) else default_wallet_multiplier
+                bonus = int(balance * multiplier)
             else:
-                # Regular bets update bankroll
-                await db_execute(
-                    "UPDATE bankroll SET balance = balance + ? WHERE user_id = ? AND session_id = ?",
-                    (payout, user_id, session_id)
-                )
+                # Regular users just get their balance
+                multiplier = 1.0
+                bonus = balance
 
-            # Track for summary
-            user_details = await db_fetchone("SELECT username FROM users WHERE id = ?", (user_id,))
-            username = user_details[0] if user_details else f"User {user_id}"
+            # Update wallet
+            wallet_row = await db_fetchone("SELECT balance FROM wallet WHERE user_id = ?", (user_id,))
+            if wallet_row:
+                await db_execute("UPDATE wallet SET balance = balance + ? WHERE user_id = ?", (bonus, user_id))
+            else:
+                await db_execute("INSERT INTO wallet (user_id, balance) VALUES (?, ?)", (user_id, bonus))
+
+            # Get username
+            user_obj = interaction.guild.get_member(int(user_id))
+            username = user_obj.display_name if user_obj else f"User {user_id}"
             
-            # Indicate if wallet bet
-            wallet_indicator = "💰 " if is_fun_bet or from_wallet else ""
-            payout_details.append(f"{wallet_indicator}🎉 **{username}** won {payout} credits")
+            # Indicate if bonus was from wallet transfer
+            if from_wallet:
+                wallet_indicator = "💎 "
+                multiplier_text = f"(x{multiplier})"
+            else:
+                wallet_indicator = ""
+                multiplier_text = ""
+                
+            payouts.append(f"{wallet_indicator}**{idx+1}. {username}** ➔ {balance} bankroll ➔ 🪙 {bonus} added to wallet {multiplier_text}")
 
-        for wager_id, user_id, amount, from_wallet in losing_wagers:
-            await db_execute("UPDATE wagers SET result = 'lose', payout = 0 WHERE id = ?", (wager_id,))
-            
-            # Track for summary
-            user_details = await db_fetchone("SELECT username FROM users WHERE id = ?", (user_id,))
-            username = user_details[0] if user_details else f"User {user_id}"
-            
-            # Indicate if wallet bet
-            wallet_indicator = "💰 " if is_fun_bet or from_wallet else ""
-            payout_details.append(f"{wallet_indicator}😔 **{username}** lost {amount} credits")
+    # 🔥 Clear bankrolls after rewards
+    await db_execute("DELETE FROM bankroll WHERE session_id = ?", (session_id,))
 
-        # Create an embed to show bet resolution
-        embed = nextcord.Embed(
-            title="🏆 Bet Resolved" if not is_fun_bet else "💰 Fun Bet Resolved",
-            description=f"**Bet:** {bet_name}\n**Winning Option:** {winning_label}",
-            color=nextcord.Color.green() if not is_fun_bet else nextcord.Color.gold()
-        )
+    # 🔥 Session Summary Stats
+    total_wagers = await db_fetchone(
+        "SELECT COUNT(*), SUM(amount) FROM wagers WHERE session_id = ? AND from_wallet = 0",
+        (session_id,)
+    )
+    wager_count = total_wagers[0] or 0
+    total_amount = total_wagers[1] or 0
 
-        # Add payout details
-        if payout_details:
-            payout_summary = "\n".join(payout_details[:10])  # Limit to 10 entries
-            if len(payout_details) > 10:
-                payout_summary += f"\n... and {len(payout_details) - 10} more"
-            embed.add_field(name="Payout Details", value=payout_summary, inline=False)
+    # 🔥 Top users by wagers
+    top_wagers = await db_fetchall(
+        """
+        SELECT 
+            u.id as user_id,
+            u.username, 
+            SUM(w.amount) as total_wagered,
+            SUM(CASE WHEN w.result = 'win' THEN w.payout - w.amount ELSE -w.amount END) as net_result
+        FROM wagers w
+        JOIN users u ON w.user_id = u.id
+        WHERE w.session_id = ? AND w.from_wallet = 0
+        GROUP BY u.id
+        ORDER BY total_wagered DESC
+        LIMIT 5
+        """,
+        (session_id,)
+    )
+
+    # 🔥 Biggest Single Bet Win and Loss
+    biggest_win = await db_fetchone(
+        """
+        SELECT 
+            u.username, 
+            w.payout - w.amount as win_amount,
+            b.name as bet_name,
+            bo.label as option_label
+        FROM wagers w
+        JOIN users u ON w.user_id = u.id
+        JOIN bet b ON w.prop_id = b.id
+        JOIN bet_options bo ON w.prop_option_id = bo.id
+        WHERE w.session_id = ? AND w.result = 'win'
+        ORDER BY win_amount DESC
+        LIMIT 1
+        """,
+        (session_id,)
+    )
+
+    biggest_loss = await db_fetchone(
+        """
+        SELECT 
+            u.username, 
+            w.amount as loss_amount,
+            b.name as bet_name,
+            bo.label as option_label
+        FROM wagers w
+        JOIN users u ON w.user_id = u.id
+        JOIN bet b ON w.prop_id = b.id
+        JOIN bet_options bo ON w.prop_option_id = bo.id
+        WHERE w.session_id = ? AND w.result = 'lose'
+        ORDER BY loss_amount DESC
+        LIMIT 1
+        """,
+        (session_id,)
+    )
+
+    # 🎨 First embed: Rewards
+    rewards_embed = nextcord.Embed(
+        title="🔴 Session Ended - Rewards",
+        description="\n".join(payouts) if payouts else "No eligible participants.",
+        color=nextcord.Color.red()
+    )
+    rewards_embed.set_footer(text=f"Session ID {session_id} • 💎 = Wallet transfer users get multipliers")
+
+    # 🎨 Second embed: Session Stats
+    stats_embed = nextcord.Embed(
+        title="📊 Session Summary",
+        color=nextcord.Color.blurple()
+    )
+    stats_embed.add_field(name="Total Bets Placed (Bankroll Only)", value=wager_count, inline=True)
+    stats_embed.add_field(name="Total Amount Wagered (Bankroll Only)", value=total_amount, inline=True)
+
+    if top_wagers:
+        leaderboard = []
+        for idx, (_, name, total_wagered, net_result) in enumerate(top_wagers):
+            net_status = "🟢" if net_result > 0 else "🔴"
+            leaderboard.append(f"**{idx+1}. {name}**\n  💰 Wagered: {total_wagered} | {net_status} Net: {net_result}")
         
-        # Add footer based on bet type
-        if is_fun_bet:
-            embed.set_footer(text="Fun Bet: All payouts went directly to wallet balances")
-        
-        # Send the summary
-        await interaction.channel.send(embed=embed)
+        stats_embed.add_field(name="Top Wagerers (Bankroll)", value="\n".join(leaderboard), inline=False)
+    else:
+        stats_embed.add_field(name="Top Wagerers", value="No wagers placed.", inline=False)
 
-        # Confirm to the admin
-        await interaction.response.send_message(f"🏆 Bet '{bet_name}' resolved. Winning option: {winning_label}", ephemeral=True)
+    # Add Biggest Win and Loss
+    if biggest_win:
+        win_details = f"**{biggest_win[0]}** won {biggest_win[1]} credits\nBet: {biggest_win[2]}\nOption: {biggest_win[3]}"
+        stats_embed.add_field(name="🏆 Biggest Single Bet Win", value=win_details, inline=False)
+
+    if biggest_loss:
+        loss_details = f"**{biggest_loss[0]}** lost {biggest_loss[1]} credits\nBet: {biggest_loss[2]}\nOption: {biggest_loss[3]}"
+        stats_embed.add_field(name="😔 Biggest Single Bet Loss", value=loss_details, inline=False)
+
+    stats_embed.set_footer(text=f"Session ID {session_id} • Only bankroll wagers are counted")
+
+    # 🔥 Send embeds
+    await interaction.response.send_message(embed=rewards_embed, ephemeral=False)
+    await interaction.followup.send(embed=stats_embed, ephemeral=False)
 
 @bot.slash_command(name="wager", description="Place a wager on an active bet")
 async def wager(
