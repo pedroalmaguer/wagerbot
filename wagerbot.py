@@ -373,9 +373,11 @@ class WagerModal(Modal):
             await interaction.response.send_message("An unexpected error occurred while placing your wager.", ephemeral=True)
 
 class WalletTransferModal(Modal):
-    def __init__(self, session_id):
+    def __init__(self, session_id, parent_view, user):
         super().__init__(title="Transfer Wallet Balance to Session")
         self.session_id = session_id
+        self.parent_view = parent_view
+        self.user = user
         
         self.transfer_amount = TextInput(
             label="Transfer Amount",
@@ -416,6 +418,9 @@ class WalletTransferModal(Modal):
                 (user_id, self.session_id, transfer_amount, transfer_amount)
             )
             
+            # Register this user with the parent view
+            self.parent_view.register_wallet_transfer(interaction.user)
+            
             await interaction.response.send_message(
                 f"💰 Transferred {transfer_amount} credits from wallet to session.\n\n" +
                 "**MULTIPLIER CONFIRMED:** Your final balance in this session will receive special multipliers at session end:\n" +
@@ -440,26 +445,21 @@ class WalletTransferModal(Modal):
             )
 
 class WalletTransferButton(Button):
-    def __init__(self, session_id):
+    def __init__(self, session_id, parent_view):
         super().__init__(
             label="Transfer Wallet Balance", 
             style=nextcord.ButtonStyle.primary
         )
         self.session_id = session_id
+        self.parent_view = parent_view
 
     async def callback(self, interaction: nextcord.Interaction):
-        # Get a reference to the parent view
-        parent_view = self.view
-        
-        # Disable buttons to prevent multiple clicks
-        for item in parent_view.children:
-            item.disabled = True
-        
-        # Update the message with disabled buttons
-        await interaction.message.edit(view=parent_view)
-        
+        # Store the original message for the parent view if not already set
+        if not self.parent_view.message:
+            self.parent_view.message = interaction.message
+            
         # Show the modal
-        modal = WalletTransferModal(self.session_id)
+        modal = WalletTransferModal(self.session_id, self.parent_view, interaction.user)
         await interaction.response.send_modal(modal)
 
 class TransferOrSkipView(View):
@@ -478,52 +478,95 @@ async def on_timeout(self):
         return
         
     try:
-        # Create a disabled view with buttons that can't be clicked
-        timed_out_view = View()
-        timed_out_view.add_item(Button(label="Transfer Wallet Balance", style=nextcord.ButtonStyle.primary, disabled=True))
-        timed_out_view.add_item(Button(label="Skip (Auto-Selected)", style=nextcord.ButtonStyle.success, disabled=True))
+        # First, make sure we disable all the buttons to prevent further interactions
+        for item in self.children:
+            item.disabled = True
+            
+        try:
+            # Update the message with disabled buttons first (as a safety measure)
+            await self.message.edit(view=self)
+        except Exception as edit_err:
+            print(f"[ERROR] Could not update buttons before deletion: {edit_err}")
         
-        # Update the original message to show timeout occurred
-        await self.message.edit(
-            content="⏱️ **Time's up!** Using session bankroll only (no wallet transfer).",
-            view=timed_out_view
+        # Now delete the original message completely
+        await self.message.delete()
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🗑️] Deleted timed-out transfer options message")
+        
+        # Create a summary of who chose what
+        # First, create lists of user display names
+        wallet_names = [user.display_name for user in self.wallet_users]
+        skip_names = [user.display_name for user in self.skip_users]
+        
+        # Sort alphabetically for a nicer display
+        wallet_names.sort()
+        skip_names.sort()
+        
+        # Create the summary embed
+        embed = nextcord.Embed(
+            title="⏱️ Wallet Transfer Options Closed!",
+            description="The 2-minute wallet transfer window has ended. Here's who made each choice:",
+            color=nextcord.Color.gold()
         )
         
-        # You could also send an announcement to the channel
-        try:
-            await self.message.channel.send(
-                "⏱️ The wallet transfer option has timed out. "
-                "All users will use session bankroll only (no multipliers) unless they already transferred funds."
+        # Add the transfer users
+        if wallet_names:
+            embed.add_field(
+                name="🤑 HIGH ROLLERS CLUB 🎰",
+                value="\n".join([f"• {name}" for name in wallet_names]) or "None",
+                inline=True
             )
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [✅] Successfully sent timeout notification to channel for session ID {self.session_id}")
-        except Exception as channel_err:
-            print(f"[ERROR] Could not send timeout announcement: {channel_err}")
-            
+        else:
+            embed.add_field(
+                name="🤑 HIGH ROLLERS CLUB 🎰",
+                value="None brave enough!",
+                inline=True
+            )
+        
+        # Add the skip users
+        if skip_names:
+            embed.add_field(
+                name="🧠 PLAYING IT SAFE SQUAD 🛡️",
+                value="\n".join([f"• {name}" for name in skip_names]) or "None",
+                inline=True
+            )
+        else:
+            embed.add_field(
+                name="🧠 PLAYING IT SAFE SQUAD 🛡️",
+                value="None clicked skip!",
+                inline=True
+            )
+        
+        # Add explanation footer
+        embed.set_footer(text="Everyone else will use session bankroll only (no multipliers)")
+        
+        # Send the summary message
+        await self.message.channel.send(embed=embed)
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [✅] Successfully sent choice summary to channel for session ID {self.session_id}")
+        
     except Exception as e:
-        print(f"[ERROR] Failed to update message on timeout: {e}")
+        print(f"[ERROR] Failed during timeout handling: {e}")
 
 
 class SkipTransferButton(Button):
-    def __init__(self):
+    def __init__(self, parent_view):
         super().__init__(
             label="Skip (Use Session Bankroll Only)", 
             style=nextcord.ButtonStyle.secondary
         )
+        self.parent_view = parent_view
 
     async def callback(self, interaction: nextcord.Interaction):
+        # Store the original message for the parent view if not already set
+        if not self.parent_view.message:
+            self.parent_view.message = interaction.message
+            
+        # Register this user as having skipped
+        self.parent_view.register_skip(interaction.user)
+        
         # Get a reference to the parent view
         parent_view = self.view
         
-        # Disable buttons to prevent multiple clicks
-        for item in parent_view.children:
-            item.disabled = True
-        
-        # Update the message with disabled buttons and success message
-        await interaction.message.edit(
-            content="✅ **Option Selected:** Using session bankroll only (no special multipliers).",
-            view=parent_view
-        )
-        
+        # Update the message for this specific user to show their choice
         await interaction.response.send_message(
             "✅ You've chosen to use the session bankroll only.\n\n" +
             "**MULTIPLIER CONFIRMED:** No special multipliers will be applied (1.0x) to your winnings at the end of the session.", 
@@ -1063,37 +1106,27 @@ async def startsession(interaction: nextcord.Interaction):
         inline=False
     )
     
-    embed.set_footer(text="Wallet transfers are high risk, high reward! This prompt will auto-select 'Skip' after 2 minutes.")
+    embed.set_footer(text="Wallet transfers are high risk, high reward! This prompt will auto-close after 2 minutes.")
 
     # Create a view with a wallet transfer button AND a skip button
     view = TransferOrSkipView(session_id)
     
-    # Send the message and store the message object for later timeout handling
-    message = await interaction.response.send_message(
+    # Send the message
+    await interaction.response.send_message(
         embed=embed, 
         view=view, 
         ephemeral=False
     )
     
     # Store the message in the view for timeout handling
-    # For some reason, interaction.response.send_message doesn't return the message
-    # We need to fetch it or get it from the original interaction
     try:
-        # Try to get the message from the original interaction
+        # Get the original message
         original_message = await interaction.original_message()
         view.message = original_message
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [✅] Successfully stored message reference for timeout handling")
     except Exception as e:
         print(f"[ERROR] Could not get original message: {e}")
-        # Try an alternative approach if the above fails
-        try:
-            # Fetch the message from the channel
-            channel_messages = await interaction.channel.history(limit=5).flatten()
-            for msg in channel_messages:
-                if msg.author == bot.user and msg.embeds and msg.embeds[0].title == "🟢 A New Betting Session Has Started!":
-                    view.message = msg
-                    break
-        except Exception as fetch_err:
-            print(f"[ERROR] Could not fetch recent messages: {fetch_err}")
+        # We'll rely on the buttons to set the message reference when they're clicked
 
 @bot.slash_command(name="stopsession", description="End the current betting session")
 async def stopsession(interaction: nextcord.Interaction):
