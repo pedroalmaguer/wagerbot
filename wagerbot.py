@@ -448,11 +448,19 @@ class WalletTransferButton(Button):
         self.session_id = session_id
 
     async def callback(self, interaction: nextcord.Interaction):
+        # Get a reference to the parent view
+        parent_view = self.view
+        
+        # Disable buttons to prevent multiple clicks
+        for item in parent_view.children:
+            item.disabled = True
+        
+        # Update the message with disabled buttons
+        await interaction.message.edit(view=parent_view)
+        
+        # Show the modal
         modal = WalletTransferModal(self.session_id)
         await interaction.response.send_modal(modal)
-        
-        # Store the original message for later reference
-        self.message = interaction.message
 
 class TransferOrSkipView(View):
     def __init__(self, session_id):
@@ -480,6 +488,7 @@ class TransferOrSkipView(View):
         except Exception as e:
             print(f"[ERROR] Failed to update message on timeout: {e}")
 
+
 class SkipTransferButton(Button):
     def __init__(self):
         super().__init__(
@@ -488,13 +497,24 @@ class SkipTransferButton(Button):
         )
 
     async def callback(self, interaction: nextcord.Interaction):
-        await interaction.response.send_message(
-            "✅ You've chosen to use the session bankroll only. No multipliers will be applied (1.0x) to your winnings at the end of the session.", 
-            ephemeral=True
+        # Get a reference to the parent view
+        parent_view = self.view
+        
+        # Disable buttons to prevent multiple clicks
+        for item in parent_view.children:
+            item.disabled = True
+        
+        # Update the message with disabled buttons and success message
+        await interaction.message.edit(
+            content="✅ **Option Selected:** Using session bankroll only (no special multipliers).",
+            view=parent_view
         )
         
-        # Store the original message for later reference
-        self.message = interaction.message
+        await interaction.response.send_message(
+            "✅ You've chosen to use the session bankroll only.\n\n" +
+            "**MULTIPLIER CONFIRMED:** No special multipliers will be applied (1.0x) to your winnings at the end of the session.", 
+            ephemeral=True
+        )
 
 class CreateBetModal(Modal):
     def __init__(self):
@@ -1033,12 +1053,33 @@ async def startsession(interaction: nextcord.Interaction):
 
     # Create a view with a wallet transfer button AND a skip button
     view = TransferOrSkipView(session_id)
-
-    await interaction.response.send_message(
+    
+    # Send the message and store the message object for later timeout handling
+    message = await interaction.response.send_message(
         embed=embed, 
         view=view, 
         ephemeral=False
     )
+    
+    # Store the message in the view for timeout handling
+    # For some reason, interaction.response.send_message doesn't return the message
+    # We need to fetch it or get it from the original interaction
+    try:
+        # Try to get the message from the original interaction
+        original_message = await interaction.original_message()
+        view.message = original_message
+    except Exception as e:
+        print(f"[ERROR] Could not get original message: {e}")
+        # Try an alternative approach if the above fails
+        try:
+            # Fetch the message from the channel
+            channel_messages = await interaction.channel.history(limit=5).flatten()
+            for msg in channel_messages:
+                if msg.author == bot.user and msg.embeds and msg.embeds[0].title == "🟢 A New Betting Session Has Started!":
+                    view.message = msg
+                    break
+        except Exception as fetch_err:
+            print(f"[ERROR] Could not fetch recent messages: {fetch_err}")
 
 @bot.slash_command(name="stopsession", description="End the current betting session")
 async def stopsession(interaction: nextcord.Interaction):
