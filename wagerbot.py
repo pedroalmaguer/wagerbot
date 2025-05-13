@@ -1355,9 +1355,20 @@ async def debug_commands(interaction: nextcord.Interaction):
         local_cmds = bot.get_application_commands()
         local_cmd_list = "\n".join([f"- /{cmd.name} (type: {type(cmd).__name__})" for cmd in local_cmds])
         
-        # Get all commands registered with Discord API
-        remote_cmds = await bot.fetch_application_commands()
-        remote_cmd_list = "\n".join([f"- /{cmd.name} (id: {cmd.id})" for cmd in remote_cmds])
+        # Get all commands directly from Discord API
+        try:
+            from nextcord.http import Route
+            app_id = bot.user.id if bot.user else bot.application_id
+            
+            # Get global commands
+            global_commands = await bot.http.request(
+                Route('GET', '/applications/{app_id}/commands', app_id=app_id)
+            )
+            
+            remote_cmd_list = "\n".join([f"- /{cmd['name']} (id: {cmd['id']})" for cmd in global_commands])
+            
+        except Exception as api_err:
+            remote_cmd_list = f"Error fetching commands from API: {str(api_err)}"
         
         # Create response
         response = (
@@ -1367,14 +1378,24 @@ async def debug_commands(interaction: nextcord.Interaction):
             f"{remote_cmd_list}\n\n"
         )
         
-        # Check specifically for endsession
+        # Check specifically for endsession/stopsession
         endsession_in_code = any(cmd.name == "endsession" for cmd in local_cmds)
-        endsession_in_discord = any(cmd.name == "endsession" for cmd in remote_cmds)
+        stopsession_in_code = any(cmd.name == "stopsession" for cmd in local_cmds)
+        
+        # Check in Discord API results if available
+        if isinstance(global_commands, list):
+            endsession_in_discord = any(cmd['name'] == "endsession" for cmd in global_commands)
+            stopsession_in_discord = any(cmd['name'] == "stopsession" for cmd in global_commands)
+        else:
+            endsession_in_discord = "Unknown (API error)"
+            stopsession_in_discord = "Unknown (API error)"
         
         response += (
-            "## Check for endsession\n"
-            f"In code: {'✅ YES' if endsession_in_code else '❌ NO'}\n"
-            f"In Discord: {'✅ YES' if endsession_in_discord else '❌ NO'}"
+            "## Check for session commands\n"
+            f"endsession in code: {'✅ YES' if endsession_in_code else '❌ NO'}\n"
+            f"endsession in Discord: {'✅ YES' if endsession_in_discord == True else '❌ NO' if endsession_in_discord == False else endsession_in_discord}\n"
+            f"stopsession in code: {'✅ YES' if stopsession_in_code else '❌ NO'}\n"
+            f"stopsession in Discord: {'✅ YES' if stopsession_in_discord == True else '❌ NO' if stopsession_in_discord == False else stopsession_in_discord}"
         )
         
         await interaction.followup.send(response, ephemeral=True)
