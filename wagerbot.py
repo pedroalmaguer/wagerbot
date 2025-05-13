@@ -1000,8 +1000,154 @@ class WinnerSelect(Select):
         # Confirm to the admin
         await interaction.response.send_message(f"🏆 Bet '{bet_name}' resolved. Winning option: {winning_label}", ephemeral=True)
 
+class CreateBetWithMoneylineOddsModal(Modal):
+    def __init__(self):
+        super().__init__(title="Create Bet with Moneyline Odds")
+
+        self.bet_question = TextInput(
+            label="Bet Question",
+            placeholder="E.g., 'Which team will win?'",
+            required=True,
+            max_length=200
+        )
+        self.bet_options = TextInput(
+            label="Options with Odds (one per line, Option|Odds)",
+            placeholder="France|+150\nArgentina|-120\nDraw|+300",
+            required=True,
+            style=nextcord.TextInputStyle.paragraph,
+            max_length=800
+        )
+        self.add_item(self.bet_question)
+        self.add_item(self.bet_options)
+
+    async def callback(self, interaction: nextcord.Interaction):
+        session_row = await db_fetchone(
+            "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+        )
+        if not session_row:
+            await interaction.response.send_message("⚠️ No active session.", ephemeral=True)
+            return
+        session_id = session_row[0]
+
+        # Parse options with American odds
+        options_with_odds = []
+        for line in self.bet_options.value.split("\n"):
+            if "|" in line.strip():
+                parts = line.strip().split("|", 1)
+                option = parts[0].strip()
+                odds_str = parts[1].strip()
+                
+                # Convert American odds to decimal multiplier
+                try:
+                    # Parse American odds and convert to decimal odds (multiplier)
+                    if odds_str.startswith("+"):
+                        american_odds = int(odds_str[1:])
+                        # For +150, decimal odds = (150/100) + 1 = 2.5
+                        decimal_odds = (american_odds / 100) + 1
+                    elif odds_str.startswith("-"):
+                        american_odds = int(odds_str[1:])
+                        # For -120, decimal odds = (100/120) + 1 = 1.833
+                        decimal_odds = (100 / american_odds) + 1
+                    else:
+                        # Try to parse as a number without sign
+                        try:
+                            american_odds = int(odds_str)
+                            if american_odds > 0:
+                                decimal_odds = (american_odds / 100) + 1
+                            else:
+                                american_odds = abs(american_odds)
+                                decimal_odds = (100 / american_odds) + 1
+                        except ValueError:
+                            # Default to even odds if parsing fails
+                            decimal_odds = 2.0
+                            odds_str = "+100"
+                    
+                    # Store as tuple: (option, american_odds_str, decimal_multiplier)
+                    options_with_odds.append((option, odds_str, decimal_odds))
+                except ValueError:
+                    # If conversion fails, use even odds (+100)
+                    options_with_odds.append((option, "+100", 2.0))
+            elif line.strip():
+                # If no odds specified, use even odds (+100)
+                options_with_odds.append((line.strip(), "+100", 2.0))
+        
+        if len(options_with_odds) < 2:
+            await interaction.response.send_message("⚠️ You must provide at least 2 options.", ephemeral=True)
+            return
+        if len(options_with_odds) > 8:
+            await interaction.response.send_message("⚠️ You can provide at most 8 options.", ephemeral=True)
+            return
+
+        # Insert the bet
+        await db_execute(
+            "INSERT INTO bet (session_id, name, description, bet_type, is_resolved) VALUES (?, ?, ?, ?, 0)",
+            (session_id, self.bet_question.value, "Bet with American odds", "moneyline")
+        )
+
+        bet_row = await db_fetchone("SELECT id FROM bet WHERE name = ? ORDER BY id DESC LIMIT 1", (self.bet_question.value,))
+        bet_id = bet_row[0]
+
+        # Insert options with odds (we store the decimal multiplier in the database)
+        for idx, (label, american_odds_str, decimal_odds) in enumerate(options_with_odds):
+            # Store decimal odds multiplied by 100 (e.g., 2.5 becomes 250)
+            await db_execute(
+                "INSERT INTO bet_options (prop_id, label, odds, american_odds) VALUES (?, ?, ?, ?)",
+                (bet_id, label, int(decimal_odds * 100), american_odds_str)
+            )
+
+        # Create description with American odds
+        description = f"**{self.bet_question.value}**\n"
+        for idx, (label, american_odds_str, decimal_odds) in enumerate(options_with_odds):
+            description += f"{EMOJI_MAP[idx]} {label} — **{american_odds_str}** odds\n"
+
+        embed = nextcord.Embed(
+            title="💬 New Bet Created with American Odds!",
+            description=description,
+            color=nextcord.Color.blue()
+        )
+        
+        embed.add_field(
+            name="Understanding American Odds",
+            value=(
+                "+150: Bet 100 to win 150 (plus your stake back)\n"
+                "-120: Bet 120 to win 100 (plus your stake back)\n"
+                "Favorite: Negative odds (e.g. -120)\n"
+                "Underdog: Positive odds (e.g. +150)"
+            ),
+            inline=False
+        )
+
+        # Create buttons view - include both bankroll and wallet options
+        view = View(timeout=None)
+
+        # Add bankroll wager buttons
+        for idx, (label, american_odds_str, _) in enumerate(options_with_odds):
+            emoji = EMOJI_MAP[idx]
+            button_label = f"{emoji} {label} ({american_odds_str})"
+            view.add_item(WagerButton(label=button_label, option_label=label, bet_id=bet_id, use_wallet=False))
+
+        # Add a separator (blank) button
+        view.add_item(Button(label="───── Wallet Betting ─────", style=nextcord.ButtonStyle.secondary, disabled=True))
+
+        # Add wallet wager buttons
+        for idx, (label, american_odds_str, _) in enumerate(options_with_odds):
+            emoji = EMOJI_MAP[idx]
+            button_label = f"💰 {emoji} {label} ({american_odds_str})"
+            view.add_item(WagerButton(label=button_label, option_label=label, bet_id=bet_id, use_wallet=True))
+
+        # Add admin control buttons
+        view.add_item(ResolveBetButton(bet_id))
+        view.add_item(LockBetButton(bet_id))
+        view.add_item(CancelBetButton(bet_id))
+
+        await interaction.response.send_message(embed=embed, view=view)
+
 
 # Slash commands
+
+@bot.slash_command(name="moneylinebet", description="Create a bet with moneyline odds (+/-)")
+async def moneylinebet(interaction: nextcord.Interaction):
+    await interaction.response.send_modal(CreateBetWithMoneylineOddsModal())
 
 @bot.slash_command(name="force_sync", description="Force sync application commands")
 @commands.has_permissions(administrator=True)  # Only admins can use this

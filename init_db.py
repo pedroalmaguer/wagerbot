@@ -11,6 +11,20 @@ async def init_database():
     # Check if database file already exists
     if os.path.exists(DB_FILE):
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💾] Database file already exists, skipping initialization.")
+        
+        # If database exists, check if we need to add the american_odds column
+        async with aiosqlite.connect(DB_FILE) as db:
+            # Check if american_odds column exists
+            cursor = await db.execute("PRAGMA table_info(bet_options)")
+            columns = await cursor.fetchall()
+            column_names = [column[1] for column in columns]
+            
+            if 'american_odds' not in column_names:
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🔄] Adding american_odds column to bet_options table...")
+                await db.execute("ALTER TABLE bet_options ADD COLUMN american_odds TEXT")
+                await db.commit()
+                print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [✅] american_odds column added successfully!")
+        
         return False
     
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💾] Initializing new database...")
@@ -71,14 +85,15 @@ async def init_database():
         )
         ''')
 
-        # Bet options table
+        # Bet options table - now includes american_odds column
         await db.execute('''
         CREATE TABLE IF NOT EXISTS bet_options (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             prop_id INTEGER,
             label TEXT,
             odds INTEGER DEFAULT 100,
-            is_winner INTEGER DEFAULT 0
+            is_winner INTEGER DEFAULT 0,
+            american_odds TEXT         -- New column for storing American-style odds format (+150, -120, etc.)
         )
         ''')
 
