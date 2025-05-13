@@ -469,24 +469,38 @@ class TransferOrSkipView(View):
         self.add_item(WalletTransferButton(session_id))
         self.add_item(SkipTransferButton())
 
-    async def on_timeout(self):
-        # When the view times out after 2 minutes, modify the message
+async def on_timeout(self):
+    # This method is called automatically when the view times out after 2 minutes
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [⏱️] AUTO-TIMEOUT: Transfer option timed out after 2 minutes for session ID {self.session_id}")
+    
+    if not self.message:
+        print("[ERROR] Could not find message to update on timeout")
+        return
+        
+    try:
+        # Create a disabled view with buttons that can't be clicked
+        timed_out_view = View()
+        timed_out_view.add_item(Button(label="Transfer Wallet Balance", style=nextcord.ButtonStyle.primary, disabled=True))
+        timed_out_view.add_item(Button(label="Skip (Auto-Selected)", style=nextcord.ButtonStyle.success, disabled=True))
+        
+        # Update the original message to show timeout occurred
+        await self.message.edit(
+            content="⏱️ **Time's up!** Using session bankroll only (no wallet transfer).",
+            view=timed_out_view
+        )
+        
+        # You could also send an announcement to the channel
         try:
-            # Create a disabled view with buttons that can't be clicked
-            view = View()
-            view.add_item(Button(label="Transfer Wallet Balance", style=nextcord.ButtonStyle.primary, disabled=True))
-            view.add_item(Button(label="Skip (Selected by Default)", style=nextcord.ButtonStyle.secondary, disabled=True))
+            await self.message.channel.send(
+                "⏱️ The wallet transfer option has timed out. "
+                "All users will use session bankroll only (no multipliers) unless they already transferred funds."
+            )
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [✅] Successfully sent timeout notification to channel for session ID {self.session_id}")
+        except Exception as channel_err:
+            print(f"[ERROR] Could not send timeout announcement: {channel_err}")
             
-            # Find the original message to edit
-            for child in self.children:
-                if hasattr(child, 'message') and child.message:
-                    await child.message.edit(
-                        content="⏱️ Time's up! Using session bankroll only (no wallet transfer).",
-                        view=view
-                    )
-                    break
-        except Exception as e:
-            print(f"[ERROR] Failed to update message on timeout: {e}")
+    except Exception as e:
+        print(f"[ERROR] Failed to update message on timeout: {e}")
 
 
 class SkipTransferButton(Button):
