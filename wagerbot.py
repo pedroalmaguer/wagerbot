@@ -1279,9 +1279,29 @@ async def stopsession(interaction: nextcord.Interaction):
                 else:
                     await db_execute("INSERT INTO wallet (user_id, balance) VALUES (?, ?)", (user_id, bonus))
 
-                # Get username
-                user_obj = interaction.guild.get_member(int(user_id))
-                username = user_obj.display_name if user_obj else f"User {user_id}"
+                # Get username - first try from Discord, then from database
+                username = None
+                try:
+                    # Get the Discord user ID from our database
+                    discord_id_row = await db_fetchone("SELECT discord_id FROM users WHERE id = ?", (user_id,))
+                    if discord_id_row and discord_id_row[0]:
+                        # Use the Discord ID to get the member object
+                        member = interaction.guild.get_member(int(discord_id_row[0]))
+                        if member:
+                            username = member.display_name
+                            print(f"[DEBUG] Found Discord user {username} for user_id {user_id}")
+                except Exception as e:
+                    print(f"[ERROR] Error getting Discord username: {e}")
+                
+                # If Discord lookup failed, fall back to database
+                if not username:
+                    try:
+                        username_row = await db_fetchone("SELECT username FROM users WHERE id = ?", (user_id,))
+                        username = username_row[0] if username_row else f"User {user_id}"
+                        print(f"[DEBUG] Using database username {username} for user_id {user_id}")
+                    except Exception as e:
+                        print(f"[ERROR] Error getting database username: {e}")
+                        username = f"User {user_id}"
                 
                 # Indicate if bonus was from wallet transfer
                 if from_wallet:
