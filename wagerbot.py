@@ -466,8 +466,104 @@ class TransferOrSkipView(View):
     def __init__(self, session_id):
         super().__init__(timeout=120)  # 2 minute timeout
         self.session_id = session_id
-        self.add_item(WalletTransferButton(session_id))
-        self.add_item(SkipTransferButton())
+        self.message = None
+        # Track user choices
+        self.wallet_users = []  # Users who transferred from wallet
+        self.skip_users = []    # Users who explicitly skipped
+        
+        self.add_item(WalletTransferButton(session_id, self))
+        self.add_item(SkipTransferButton(self))
+
+    # Add method to register user choices
+    def register_wallet_transfer(self, user):
+        """Register a user who transferred from wallet"""
+        if user not in self.wallet_users:
+            self.wallet_users.append(user)
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [💰] User {user.display_name} registered for wallet transfer")
+    
+    def register_skip(self, user):
+        """Register a user who skipped transfer"""
+        if user not in self.skip_users:
+            self.skip_users.append(user)
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [⏭️] User {user.display_name} registered for skip")
+
+    async def on_timeout(self):
+        # This method is called automatically when the view times out after 2 minutes
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [⏱️] AUTO-TIMEOUT: Transfer option timed out after 2 minutes for session ID {self.session_id}")
+        
+        if not self.message:
+            print("[ERROR] Could not find message to update on timeout")
+            return
+            
+        try:
+            # First, make sure we disable all the buttons to prevent further interactions
+            for item in self.children:
+                item.disabled = True
+                
+            try:
+                # Update the message with disabled buttons first (as a safety measure)
+                await self.message.edit(view=self)
+            except Exception as edit_err:
+                print(f"[ERROR] Could not update buttons before deletion: {edit_err}")
+            
+            # Now delete the original message completely
+            await self.message.delete()
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [🗑️] Deleted timed-out transfer options message")
+            
+            # Create a summary of who chose what
+            # First, create lists of user display names
+            wallet_names = [user.display_name for user in self.wallet_users]
+            skip_names = [user.display_name for user in self.skip_users]
+            
+            # Sort alphabetically for a nicer display
+            wallet_names.sort()
+            skip_names.sort()
+            
+            # Create the summary embed
+            embed = nextcord.Embed(
+                title="⏱️ Wallet Transfer Options Closed!",
+                description="The 2-minute wallet transfer window has ended. Here's who made each choice:",
+                color=nextcord.Color.gold()
+            )
+            
+            # Add the transfer users
+            if wallet_names:
+                embed.add_field(
+                    name="🤑 HIGH ROLLERS CLUB 🎰",
+                    value="\n".join([f"• {name}" for name in wallet_names]) or "None",
+                    inline=True
+                )
+            else:
+                embed.add_field(
+                    name="🤑 HIGH ROLLERS CLUB 🎰",
+                    value="None brave enough!",
+                    inline=True
+                )
+            
+            # Add the skip users
+            if skip_names:
+                embed.add_field(
+                    name="🧠 PLAYING IT SAFE SQUAD 🛡️",
+                    value="\n".join([f"• {name}" for name in skip_names]) or "None",
+                    inline=True
+                )
+            else:
+                embed.add_field(
+                    name="🧠 PLAYING IT SAFE SQUAD 🛡️",
+                    value="None clicked skip!",
+                    inline=True
+                )
+            
+            # Add explanation footer
+            embed.set_footer(text="Everyone else will use session bankroll only (no multipliers)")
+            
+            # Send the summary message
+            await self.message.channel.send(embed=embed)
+            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [✅] Successfully sent choice summary to channel for session ID {self.session_id}")
+            
+        except Exception as e:
+            print(f"[ERROR] Failed during timeout handling: {e}")
+
 
 async def on_timeout(self):
     # This method is called automatically when the view times out after 2 minutes
