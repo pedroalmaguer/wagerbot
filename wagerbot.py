@@ -1145,6 +1145,130 @@ class CreateBetWithMoneylineOddsModal(Modal):
 
 # Slash commands
 
+@bot.slash_command(name="leaderboard", description="View the current leaderboard of users by balance")
+async def leaderboard(
+    interaction: nextcord.Interaction,
+    board_type: str = nextcord.SlashOption(
+        name="type",
+        description="Which balance type to show",
+        choices={"Session Bankroll": "session", "Wallet Balance": "wallet"},
+        required=True
+    )
+):
+    await interaction.response.defer(ephemeral=False)
+    
+    try:
+        if board_type == "session":
+            # Get active session
+            session_row = await db_fetchone(
+                "SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1"
+            )
+            
+            if not session_row:
+                await interaction.followup.send("⚠️ No active session found.")
+                return
+                
+            session_id = session_row[0]
+            
+            # Get top users by bankroll
+            users = await db_fetchall(
+                """
+                SELECT b.user_id, b.balance, u.username, u.discord_id 
+                FROM bankroll b
+                JOIN users u ON b.user_id = u.id
+                WHERE b.session_id = ?
+                ORDER BY b.balance DESC
+                LIMIT 15
+                """,
+                (session_id,)
+            )
+            
+            if not users:
+                await interaction.followup.send("No bankroll data found for the current session.")
+                return
+                
+            # Create the leaderboard embed
+            embed = nextcord.Embed(
+                title="🏆 Session Bankroll Leaderboard",
+                description="Current session balances ranked from highest to lowest",
+                color=nextcord.Color.gold()
+            )
+            
+            leaderboard_text = []
+            for idx, (user_id, balance, username, discord_id) in enumerate(users):
+                # Try to get member object for current username
+                try:
+                    member = interaction.guild.get_member(int(discord_id))
+                    display_name = member.display_name if member else username
+                except:
+                    display_name = username
+                
+                # Special formatting for top 3
+                if idx == 0:
+                    leaderboard_text.append(f"🥇 **{display_name}** — {balance} credits")
+                elif idx == 1:
+                    leaderboard_text.append(f"🥈 **{display_name}** — {balance} credits")
+                elif idx == 2:
+                    leaderboard_text.append(f"🥉 **{display_name}** — {balance} credits")
+                else:
+                    leaderboard_text.append(f"{idx+1}. **{display_name}** — {balance} credits")
+            
+            embed.description = "\n".join(leaderboard_text)
+            embed.set_footer(text="Session bankroll shows current session balances only")
+            
+            await interaction.followup.send(embed=embed)
+            
+        elif board_type == "wallet":
+            # Get top users by wallet balance
+            users = await db_fetchall(
+                """
+                SELECT w.user_id, w.balance, u.username, u.discord_id 
+                FROM wallet w
+                JOIN users u ON w.user_id = u.id
+                ORDER BY w.balance DESC
+                LIMIT 15
+                """,
+            )
+            
+            if not users:
+                await interaction.followup.send("No wallet data found.")
+                return
+                
+            # Create the leaderboard embed
+            embed = nextcord.Embed(
+                title="💰 Wallet Balance Leaderboard",
+                description="Persistent wallet balances ranked from highest to lowest",
+                color=nextcord.Color.dark_gold()
+            )
+            
+            leaderboard_text = []
+            for idx, (user_id, balance, username, discord_id) in enumerate(users):
+                # Try to get member object for current username
+                try:
+                    member = interaction.guild.get_member(int(discord_id))
+                    display_name = member.display_name if member else username
+                except:
+                    display_name = username
+                
+                # Special formatting for top 3
+                if idx == 0:
+                    leaderboard_text.append(f"🥇 **{display_name}** — {balance} credits")
+                elif idx == 1:
+                    leaderboard_text.append(f"🥈 **{display_name}** — {balance} credits")
+                elif idx == 2:
+                    leaderboard_text.append(f"🥉 **{display_name}** — {balance} credits")
+                else:
+                    leaderboard_text.append(f"{idx+1}. **{display_name}** — {balance} credits")
+            
+            embed.description = "\n".join(leaderboard_text)
+            embed.set_footer(text="Wallet balances persist between sessions")
+            
+            await interaction.followup.send(embed=embed)
+    
+    except Exception as e:
+        print(f"[ERROR] Error in leaderboard command: {e}")
+        await interaction.followup.send(f"⚠️ An error occurred: {str(e)}")
+
 @bot.slash_command(name="moneylinebet", description="Create a bet with moneyline odds (+/-)")
 async def moneylinebet(interaction: nextcord.Interaction):
     await interaction.response.send_modal(CreateBetWithMoneylineOddsModal())
