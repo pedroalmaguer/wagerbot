@@ -26,7 +26,12 @@ data.json
 wagerbot.db
 schema.sql
 Update.sql
+
 # Virtual environment folders
 venv/
 env/
 wagerbot.db.bak
+
+
+# Tests
+Tests/
