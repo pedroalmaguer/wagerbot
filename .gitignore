@@ -35,3 +35,4 @@ wagerbot.db.bak
 
 # Tests
 Tests/
+test_bet_functionality.py

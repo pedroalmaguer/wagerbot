@@ -1802,6 +1802,62 @@ async def debug_commands(interaction: nextcord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
 
+
+
+def create_bet_view(bet_id, options, bet_type="moneyline"):
+    """Factory function to create consistent bet views for both new and restored bets."""
+    view = View(timeout=None)
+    
+    # Add appropriate buttons based on bet type
+    if bet_type == "funbet":
+        # Fun bet (wallet only)
+        for idx, option in enumerate(options):
+            label = option[0] if isinstance(option, tuple) else option
+            emoji = EMOJI_MAP[idx]
+            view.add_item(WagerButton(
+                label=f"💰 {emoji} {label}", 
+                option_label=label, 
+                bet_id=bet_id, 
+                use_wallet=True
+            ))
+    else:
+        # Regular bet (bankroll + wallet)
+        # Add bankroll wager buttons
+        for idx, option in enumerate(options):
+            label = option[0] if isinstance(option, tuple) else option
+            emoji = EMOJI_MAP[idx]
+            view.add_item(WagerButton(
+                label=f"{emoji} {label}", 
+                option_label=label, 
+                bet_id=bet_id, 
+                use_wallet=False
+            ))
+
+        # Add a separator button
+        view.add_item(Button(
+            label="───── Wallet Betting ─────", 
+            style=nextcord.ButtonStyle.secondary, 
+            disabled=True
+        ))
+
+        # Add wallet wager buttons
+        for idx, option in enumerate(options):
+            label = option[0] if isinstance(option, tuple) else option
+            emoji = EMOJI_MAP[idx]
+            view.add_item(WagerButton(
+                label=f"💰 {emoji} {label}", 
+                option_label=label, 
+                bet_id=bet_id, 
+                use_wallet=True
+            ))
+
+    # Always add admin control buttons
+    view.add_item(ResolveBetButton(bet_id))
+    view.add_item(LockBetButton(bet_id))
+    view.add_item(CancelBetButton(bet_id))
+    
+    return view
+
 @bot.event
 async def on_ready():
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -1818,10 +1874,8 @@ async def on_ready():
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         ''')
-
         # Add your other table creation code here
         # ...
-
         await db.commit()
     
     print(f"[{now}] [💾] Database initialization complete")
@@ -1876,6 +1930,43 @@ async def on_ready():
         print(f"[{now}] [✅] Synced {len(cmds)} commands: {', '.join(['/' + cmd.name for cmd in cmds])}")
     except Exception as e:
         print(f"[{now}] [❌] Error syncing commands: {str(e)}")
+    
+    # RESTORE ACTIVE BET HANDLERS - NEW CODE STARTS HERE
+    print(f"[{now}] [🔄] Restoring active bet handlers...")
+    
+    try:
+        # Fetch all unresolved bets
+        active_bets = await db_fetchall(
+            "SELECT id, bet_type FROM bet WHERE is_resolved = 0"
+        )
+        print(f"[{now}] [📊] Found {len(active_bets)} unresolved bets")
+        
+        restored_count = 0
+        for bet_id, bet_type in active_bets:
+            try:
+                # Fetch bet options
+                options_data = await db_fetchall(
+                    "SELECT label FROM bet_options WHERE prop_id = ?",
+                    (bet_id,)
+                )
+                
+                # Extract option labels
+                options = [row[0] for row in options_data]
+                
+                # Create and register the view
+                view = create_bet_view(bet_id, options, bet_type)
+                bot.add_view(view)
+                restored_count += 1
+                
+            except Exception as e:
+                print(f"[{now}] [❌] Failed to restore bet ID {bet_id}: {e}")
+                continue
+        
+        print(f"[{now}] [✅] Successfully restored {restored_count}/{len(active_bets)} bet handlers")
+        
+    except Exception as e:
+        print(f"[{now}] [❌] Error during bet handler restoration: {str(e)}")
+    # NEW CODE ENDS HERE
     
     # Now print the ready message at the end
     print(f"[{now}] [🫼] Bot is online and ready!")
