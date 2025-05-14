@@ -16,8 +16,10 @@ APPLICATION_ID = os.getenv("DISCORD_APPLICATION_ID")
 
 bot = commands.Bot(intents=intents, application_id=APPLICATION_ID)
 
+# Global Vars
 
 
+db = None
 
 # Constants that need to be shared with init_db.py
 DB_FILE = "wagerbot.db"
@@ -59,104 +61,100 @@ async def get_active_session_id():
     return None
 
 async def resolve_bet_and_payout(interaction: nextcord.Interaction, bet_id: int, winning_option_id: int):
+    """Resolve a bet and handle payouts more efficiently with parallel queries."""
+    
     session_id = await get_active_session_id()
+    guild = interaction.guild
 
-    # Mark the bet as resolved
-    await db_execute("UPDATE bet SET is_resolved = 1 WHERE id = ?", (bet_id,))
-
-    # Mark the winning option
-    await db_execute("UPDATE bet_options SET is_winner = 1 WHERE id = ?", (winning_option_id,))
-
-    # Find all wagers for this bet
-    wagers = await db_fetchall(
-        "SELECT user_id, amount, prop_option_id FROM wagers WHERE prop_id = ?",
-        (bet_id,)
+    # Execute initial updates in parallel
+    await asyncio.gather(
+        db.execute("UPDATE bet SET is_resolved = 1 WHERE id = ?", (bet_id,)),
+        db.execute("UPDATE bet_options SET is_winner = 1 WHERE id = ?", (winning_option_id,))
     )
-
-    # Fetch bet details for context
-    bet_details = await db_fetchone(
-        "SELECT name FROM bet WHERE id = ?",
-        (bet_id,)
+    
+    # Fetch all required data in parallel
+    wagers, bet_details, winning_option = await asyncio.gather(
+        db.fetchall("SELECT user_id, amount, prop_option_id FROM wagers WHERE prop_id = ?", (bet_id,)),
+        db.fetchone("SELECT name FROM bet WHERE id = ?", (bet_id,)),
+        db.fetchone("SELECT label FROM bet_options WHERE id = ?", (winning_option_id,))
     )
+    
     bet_name = bet_details[0] if bet_details else "Unnamed Bet"
-
-    # Fetch winning option label
-    winning_option = await db_fetchone(
-        "SELECT label FROM bet_options WHERE id = ?",
-        (winning_option_id,)
-    )
     winning_label = winning_option[0] if winning_option else "Unknown Option"
 
     result_lines = []
-    # Track guild to get member objects for sending messages
-    guild = interaction.guild
-
+    update_tasks = []
+    message_tasks = []
+    
     for user_id, amount, prop_option_id in wagers:
         won = prop_option_id == winning_option_id
         
         if won:
-            # Calculate payout (simple 2x for now)
-            odds_row = await db_fetchone(
-                "SELECT odds FROM bet_options WHERE id = ?",
-                (prop_option_id,)
-            )
+            # Get odds for this option
+            odds_row = await db.fetchone("SELECT odds FROM bet_options WHERE id = ?", (prop_option_id,))
             odds = odds_row[0] if odds_row else 100
-
             payout = int(amount * (odds / 100))
-
-            # Update bankroll
-            await db_execute(
+            
+            # Queue database updates
+            update_tasks.append(db.execute(
                 "UPDATE bankroll SET balance = balance + ? WHERE user_id = ? AND session_id = ?",
                 (payout, user_id, session_id)
-            )
-
-            # Update wager result
-            await db_execute(
+            ))
+            update_tasks.append(db.execute(
                 "UPDATE wagers SET result = 'win', payout = ? WHERE user_id = ? AND prop_id = ?",
                 (payout, user_id, bet_id)
-            )
-
-            # Try to get the user to send a personal message
+            ))
+            
+            # Try to get member to send notification
             try:
                 member = guild.get_member(int(user_id))
                 if member:
-                    # Send an ephemeral-style personal message about the win
-                    await member.send(
+                    message_tasks.append(member.send(
                         f"🎉 **Congratulations!**\n"
                         f"You won the bet: **{bet_name}**\n"
                         f"Winning Option: {winning_label}\n"
                         f"Bet Amount: {amount}\n"
                         f"Payout: {payout} credits\n"
                         f"Net Gain: +{payout - amount} credits"
-                    )
-                result_lines.append(f"🎉 **{member.display_name}** won {payout} credits!")
-            except:
-                # Fallback if DM fails
+                    ))
+                    result_lines.append(f"🎉 **{member.display_name}** won {payout} credits!")
+                else:
+                    result_lines.append(f"🎉 User {user_id} won {payout} credits!")
+            except Exception as e:
+                print(f"[ERROR] Failed to handle win notification for user {user_id}: {e}")
                 result_lines.append(f"🎉 User {user_id} won {payout} credits!")
-
         else:
-            # Update losing wager
-            await db_execute(
+            # Queue losing wager update
+            update_tasks.append(db.execute(
                 "UPDATE wagers SET result = 'lose' WHERE user_id = ? AND prop_id = ?",
                 (user_id, bet_id)
-            )
-
-            # Try to send loss message
+            ))
+            
+            # Try to send loss notification
             try:
                 member = guild.get_member(int(user_id))
                 if member:
-                    # Send an ephemeral-style personal message about the loss
-                    await member.send(
+                    message_tasks.append(member.send(
                         f"😔 **Better luck next time!**\n"
                         f"You lost the bet: **{bet_name}**\n"
                         f"Winning Option: {winning_label}\n"
                         f"Bet Amount: {amount}\n"
                         f"Net Loss: -{amount} credits"
-                    )
-            except:
-                pass  # Silently fail if DM can't be sent
-
-    # Final embed with overall results
+                    ))
+            except Exception as e:
+                print(f"[ERROR] Failed to handle loss notification for user {user_id}: {e}")
+    
+    # Execute all database updates in parallel
+    if update_tasks:
+        await asyncio.gather(*update_tasks)
+    
+    # Send all notifications in parallel
+    if message_tasks:
+        # We use asyncio.gather with return_exceptions=True to prevent one failed
+        # message from blocking others
+        await asyncio.gather(*message_tasks, return_exceptions=True)
+    
+    # Create and send the results embed
     embed = nextcord.Embed(
         title="🏁 Bet Resolved!",
         description="\n".join(result_lines) if result_lines else "No participants this time!",
@@ -169,25 +167,78 @@ async def resolve_bet_and_payout(interaction: nextcord.Interaction, bet_id: int,
 # Ensures a user exists in the database. 
 # If not, inserts them using their Discord ID and username.
 async def ensure_user_exists(discord_user: nextcord.User):
-    user_row = await db_fetchone(
-        "SELECT id FROM users WHERE discord_id = ?", (str(discord_user.id),)
-    )
-    if user_row:
-        await db_execute(
+    """Ensure a user exists in the database with caching."""
+    discord_id = str(discord_user.id)
+    
+    # Check cache first
+    if discord_id in user_id_cache:
+        # Update username in case it changed
+        await db.execute(
             "UPDATE users SET username = ? WHERE discord_id = ?",
-            (discord_user.display_name, str(discord_user.id))
+            (discord_user.display_name, discord_id)
         )
+        return user_id_cache[discord_id]
+
+    # Not in cache, check database
+    user_row = await db.fetchone(
+        "SELECT id FROM users WHERE discord_id = ?", (discord_id,)
+    )
+    
+    if user_row:
+        # Update username and cache the id
+        await db.execute(
+            "UPDATE users SET username = ? WHERE discord_id = ?",
+            (discord_user.display_name, discord_id)
+        )
+        user_id_cache[discord_id] = user_row[0]
         return user_row[0]
 
-    await db_execute(
+    # User doesn't exist, create a new one
+    await db.execute(
         "INSERT INTO users (discord_id, username) VALUES (?, ?)",
-        (str(discord_user.id), discord_user.display_name)
+        (discord_id, discord_user.display_name)
     )
-    new_user_row = await db_fetchone(
-        "SELECT id FROM users WHERE discord_id = ?", (str(discord_user.id),)
+    
+    # Get the new ID and cache it
+    new_user_row = await db.fetchone(
+        "SELECT id FROM users WHERE discord_id = ?", (discord_id,)
     )
-    return new_user_row[0]
+    user_id = new_user_row[0]
+    user_id_cache[discord_id] = user_id
+    return user_id
 
+class DBManager:
+    """Database manager that maintains a single connection for the bot's lifetime."""
+    
+    def __init__(self, db_file):
+        self.db_file = db_file
+        self.connection = None
+    
+    async def init(self):
+        """Initialize the database connection."""
+        self.connection = await aiosqlite.connect(self.db_file)
+        return self
+    
+    async def execute(self, query, params=()):
+        """Execute a query and commit the changes."""
+        await self.connection.execute(query, params)
+        await self.connection.commit()
+    
+    async def fetchone(self, query, params=()):
+        """Execute a query and fetch one result."""
+        async with self.connection.execute(query, params) as cursor:
+            return await cursor.fetchone()
+    
+    async def fetchall(self, query, params=()):
+        """Execute a query and fetch all results."""
+        async with self.connection.execute(query, params) as cursor:
+            return await cursor.fetchall()
+    
+    async def close(self):
+        """Close the database connection."""
+        if self.connection:
+            await self.connection.close()
+            self.connection = None
 
 class WagerButton(Button):
     def __init__(self, label: str, option_label: str, bet_id: int, use_wallet: bool = False):
@@ -1931,7 +1982,7 @@ async def on_ready():
     except Exception as e:
         print(f"[{now}] [❌] Error syncing commands: {str(e)}")
     
-    # RESTORE ACTIVE BET HANDLERS - NEW CODE STARTS HERE
+    # RESTORE ACTIVE BET HANDLERS
     print(f"[{now}] [🔄] Restoring active bet handlers...")
     
     try:
@@ -1966,7 +2017,7 @@ async def on_ready():
         
     except Exception as e:
         print(f"[{now}] [❌] Error during bet handler restoration: {str(e)}")
-    # NEW CODE ENDS HERE
+   
     
     # Now print the ready message at the end
     print(f"[{now}] [🫼] Bot is online and ready!")
